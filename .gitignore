@@ -3,3 +3,8 @@
 *.pdb
 Cargo.lock.bak
 .DS_Store
+
+# Generated wasm artifacts and the emitted sample receipt (rebuild via scripts/build-web-demo.sh)
+/web/pkg
+/web/sample-receipt.json
+/crates/pqtl-wasm/pkg-node

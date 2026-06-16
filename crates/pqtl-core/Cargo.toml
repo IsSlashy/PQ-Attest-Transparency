@@ -5,14 +5,25 @@ edition.workspace = true
 license.workspace = true
 description = "Core types, trust-boundary traits, transparency log and client receipt verifier (M0: placeholder crypto)."
 
+[features]
+default = ["rng", "serde"]
+# RNG-using operations: keygen, hedged signing, encapsulation. Disabled for the
+# verify-only / wasm32 build, which then pulls NO getrandom dependency at all —
+# the client-side receipt verifier is, by construction, RNG-free.
+rng = ["fips205/default-rng", "x-wing/getrandom"]
+# Serde (de)serialization of the receipt and its parts — the portable receipt format.
+serde = ["dep:serde"]
+
 [dependencies]
 sha2 = { workspace = true }
 # Real post-quantum STH signing (M1). FIPS 205 SLH-DSA; no_std, heap-free verify
 # (clean wasm32 verifier). Maintained + vector-tested, NOT independently audited.
-fips205 = "0.4.0"
+# default-features off so the verify path needs no RNG; `rng` re-adds default-rng.
+fips205 = { version = "0.4.0", default-features = false, features = ["slh_dsa_sha2_128s"] }
 # Real HNDL-safe session binding (M2). X-Wing = hybrid X25519 + ML-KEM-768 with a
 # single combiner (draft-connolly-cfrg-xwing-kem). Maintained, NOT audited.
-# `getrandom` enables the OS-RNG keygen/encapsulate convenience methods.
-x-wing = { version = "0.1.0-rc.0", features = ["getrandom"] }
+# getrandom is enabled only via the `rng` feature (keygen/encapsulate).
+x-wing = { version = "0.1.0-rc.0", default-features = false }
 # HKDF-SHA256 for transcript-bound session-key derivation.
 hkdf = "0.12"
+serde = { version = "1", features = ["derive"], optional = true }

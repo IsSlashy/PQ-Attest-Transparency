@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>PQ-Attest-Transparency — browser verifier</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 15px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+         max-width: 760px; margin: 2.5rem auto; padding: 0 1.2rem; }
+  h1 { font-size: 1.15rem; letter-spacing: -0.02em; }
+  p.lead { opacity: 0.8; }
+  .card { border: 1px solid currentColor; border-radius: 10px; padding: 1rem 1.2rem; margin: 1rem 0; }
+  .verdict { font-size: 1.05rem; font-weight: 600; }
+  .ok { color: #1a7f37; } .bad { color: #b3261e; }
+  button { font: inherit; padding: 0.45rem 0.9rem; border-radius: 8px; border: 1px solid currentColor;
+           background: transparent; cursor: pointer; margin-right: 0.5rem; }
+  pre { white-space: pre-wrap; word-break: break-all; opacity: 0.75; font-size: 12.5px; }
+  code { opacity: 0.9; }
+</style>
+</head>
+<body>
+  <h1>PQ-Attest-Transparency — client-side receipt verifier (WASM)</h1>
+  <p class="lead">
+    This page verifies a confidential-inference session receipt <em>entirely in your
+    browser</em>: post-quantum STH signature (SLH-DSA), Merkle inclusion, session
+    binding, and that the build's root matches an independently-trusted one. No server
+    is contacted to decide the verdict; the WASM verifier uses no randomness.
+  </p>
+
+  <div class="card">
+    <div id="verdict" class="verdict">Loading WASM…</div>
+    <pre id="reason"></pre>
+  </div>
+
+  <div class="card">
+    <button id="verify">Verify the honest receipt</button>
+    <button id="tamper">Tamper (flip 1 byte of the STH signature)</button>
+    <p style="opacity:.7;margin-bottom:0">
+      The honest receipt verifies ✅. Tampering with any field — here a single byte of
+      the SLH-DSA signature — makes it fail ❌, because the signature no longer matches.
+    </p>
+  </div>
+
+  <details class="card">
+    <summary>About the trust model</summary>
+    <p style="opacity:.8">
+      The receipt proves <strong>non-equivocation</strong> (the build is in a public,
+      append-only log) and <strong>HNDL-safe binding</strong> (X25519+ML-KEM-768). It does
+      <em>not</em> prove the build is honest — only that it cannot be served to you in
+      secret. The <code>trusted_root</code> here stands in for a root obtained from
+      independent witnesses (milestone M4) or an on-chain anchor.
+    </p>
+  </details>
+
+<script type="module">
+  import init, { verify_receipt_json } from './pkg/pqtl_wasm.js';
+
+  const verdictEl = document.getElementById('verdict');
+  const reasonEl = document.getElementById('reason');
+
+  let bundle = null;
+
+  function show(resultJson) {
+    const r = JSON.parse(resultJson);
+    verdictEl.textContent = r.accepted ? '✅ ACCEPTED' : '❌ REJECTED';
+    verdictEl.className = 'verdict ' + (r.accepted ? 'ok' : 'bad');
+    reasonEl.textContent = r.reason;
+  }
+
+  function run(receiptObj) {
+    const out = verify_receipt_json(
+      JSON.stringify(receiptObj),
+      bundle.expected_nonce_hex,
+      bundle.sth_pubkey_hex,
+      bundle.trusted_root_hex,
+    );
+    show(out);
+  }
+
+  document.getElementById('verify').onclick = () => run(bundle.receipt);
+
+  document.getElementById('tamper').onclick = () => {
+    const t = structuredClone(bundle.receipt);
+    t.sth.signature[0] = t.sth.signature[0] ^ 1; // flip one bit
+    run(t);
+  };
+
+  (async () => {
+    await init();
+    bundle = await (await fetch('./sample-receipt.json')).json();
+    run(bundle.receipt); // verify the honest receipt on load
+  })();
+</script>
+</body>
+</html>

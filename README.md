@@ -6,9 +6,11 @@ so a provider cannot *secretly* serve a targeted, backdoored build.
 
 Think *Certificate Transparency, for confidential inference, post-quantum, verified by the end user.*
 
-> **Status: M0 — walking skeleton. All cryptography is a SHA-256 placeholder.**
-> No real post-quantum primitive is wired yet. This milestone exists to prove the
-> end-to-end wiring (binding → inclusion → signature → anchor) and the ✅/❌ demo.
+> **Status: M0–M3 done. Cryptography is real end to end.**
+> STH signed with **SLH-DSA** (FIPS 205); Merkle log with RFC 6962 **inclusion +
+> consistency** proofs; HNDL-safe session binding with **X-Wing** (X25519+ML-KEM-768);
+> and a **client-side receipt verifier that compiles to WebAssembly** and runs in the
+> browser with no randomness and no network. Remaining: M4 witness co-signing, M5 bench.
 > Roadmap and decisions: see [`DECISIONS.md`](./DECISIONS.md). Research: [`RESEARCH.md`](./RESEARCH.md).
 
 ## The problem (threat model — read this first)
@@ -47,11 +49,29 @@ Pitch rule: *"they can no longer lie in secret or rewrite history"* — never *"
   Optional (M5): `ChainAnchor` (on-chain root; removes the need to bootstrap a witness
   federation — *not* a speed argument).
 
-## Run the M0 demo
+## Run the CLI demo
 
 ```bash
-cargo run -p pqtl-cli       # the ✅ logged / ❌ ghost-build demo
-cargo test                  # inclusion proofs (sizes 1..33) + receipt round-trip + attack
+cargo run -p pqtl-cli --bin pqtl-demo   # ✅ logged+HNDL-safe / ❌ ghost build / ❌ history rewrite
+cargo test                              # 8 tests: inclusion 1..33, consistency, SLH-DSA, X-Wing, attack
+```
+
+## Run the browser verifier (M3)
+
+The receipt verifier compiles to WASM and runs entirely client-side:
+
+```bash
+sh scripts/build-web-demo.sh            # emits a sample receipt + builds web/pkg
+cd web && python -m http.server 8080    # then open http://localhost:8080
+```
+
+The honest receipt verifies ✅; the "Tamper" button flips one byte of the SLH-DSA
+signature and it fails ❌. Headless proof (no browser):
+
+```bash
+wasm-pack build crates/pqtl-wasm --target nodejs --dev --out-dir pkg-node
+cargo run -p pqtl-cli --bin pqtl-emit
+node scripts/wasm-smoke.cjs             # honest=accept, tampered=reject, split-view=reject
 ```
 
 ## Layout
@@ -59,7 +79,11 @@ cargo test                  # inclusion proofs (sizes 1..33) + receipt round-tri
 ```
 crates/
   pqtl-core/   types, trust-boundary traits, transparency log, client receipt verifier
-  pqtl-cli/    M0 demo driver (pqtl-demo)
+               (RNG-free verify path; the `rng` feature gates keygen/sign/encapsulate)
+  pqtl-cli/    pqtl-demo (CLI scenarios) + pqtl-emit (writes a sample receipt JSON)
+  pqtl-wasm/   the receipt verifier compiled to WebAssembly (wasm-bindgen)
+web/           index.html browser verifier + generated pkg/ (built by wasm-pack)
+scripts/       build-web-demo.sh, wasm-smoke.cjs
 ```
 
 ## License

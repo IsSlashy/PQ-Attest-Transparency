@@ -43,20 +43,24 @@ pub fn sha256(parts: &[&[u8]]) -> Hash {
 
 /// Hash of a loader build — what gets attested and logged.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Measurement(pub Hash);
 
 /// Per-session freshness value chosen by the client (anti-replay).
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Nonce(pub Hash);
 
 /// The client's KEM public key. M0: opaque placeholder bytes; M2: hybrid X25519+ML-KEM.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct KemPublicKey(pub Vec<u8>);
 
 /// A (mock) hardware attestation quote. `report_data` binds the session so that
 /// a captured ciphertext today cannot be retargeted later (HNDL-safe binding):
 /// `report_data = H(DOMAIN ‖ nonce ‖ kem_pubkey ‖ measurement)`.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Quote {
     pub measurement: Measurement,
     pub report_data: Hash,
@@ -64,6 +68,7 @@ pub struct Quote {
 
 /// Signed Tree Head: the log operator's commitment to its history at a size.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SignedTreeHead {
     pub tree_size: u64,
     pub root: Hash,
@@ -72,6 +77,7 @@ pub struct SignedTreeHead {
 
 /// A Merkle inclusion proof (RFC 6962 audit path, leaf→root order).
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct InclusionProof {
     pub leaf_index: u64,
     pub tree_size: u64,
@@ -81,6 +87,7 @@ pub struct InclusionProof {
 /// An RFC 6962 consistency proof: proves the size-`first_size` tree is a prefix of
 /// the size-`second_size` tree — i.e. the log was only appended to, never rewritten.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ConsistencyProof {
     pub first_size: u64,
     pub second_size: u64,
@@ -89,6 +96,7 @@ pub struct ConsistencyProof {
 
 /// The client-facing session receipt — the central object of the whole artifact.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Receipt {
     pub quote: Quote,
     pub nonce: Nonce,
@@ -209,52 +217,23 @@ pub mod slh {
     //! The log operator holds [`SlhSigner`] (secret key); the client holds only
     //! [`SlhVerifier`] (public key). Verification uses no RNG → clean wasm32 build.
     //! Crate is maintained + NIST-vector-tested but NOT independently audited.
-    use super::{SthSigner, SthVerifier};
+    use super::SthVerifier;
+    #[cfg(feature = "rng")]
+    use super::SthSigner;
     use fips205::slh_dsa_sha2_128s as pset;
-    use fips205::traits::{SerDes, Signer, Verifier};
+    use fips205::traits::{SerDes, Verifier};
+    #[cfg(feature = "rng")]
+    use fips205::traits::Signer;
 
     /// SLH-DSA-SHA2-128s signature length in bytes (7856).
     pub const SIG_LEN: usize = pset::SIG_LEN;
     /// SLH-DSA-SHA2-128s public-key length in bytes (32).
     pub const PK_LEN: usize = pset::PK_LEN;
 
-    /// Log-operator signing key.
-    pub struct SlhSigner {
-        sk: pset::PrivateKey,
-        pk_bytes: [u8; PK_LEN],
-    }
-
-    /// Client-side verifying key (public only).
+    /// Client-side verifying key (public only). Available everywhere, including the
+    /// `--no-default-features` (verify-only, wasm32) build — it needs no RNG.
     pub struct SlhVerifier {
         pk: pset::PublicKey,
-    }
-
-    impl SlhSigner {
-        /// Generate a fresh keypair (uses the OS RNG via `getrandom`).
-        pub fn generate() -> Result<Self, &'static str> {
-            let (pk, sk) = pset::try_keygen()?;
-            Ok(Self {
-                sk,
-                pk_bytes: pk.into_bytes(),
-            })
-        }
-        /// The matching public verifier the client would receive out of band.
-        pub fn verifier(&self) -> SlhVerifier {
-            SlhVerifier::from_bytes(&self.pk_bytes).expect("own public key is valid")
-        }
-        pub fn public_key_bytes(&self) -> Vec<u8> {
-            self.pk_bytes.to_vec()
-        }
-    }
-
-    impl SthSigner for SlhSigner {
-        fn sign(&self, msg: &[u8]) -> Vec<u8> {
-            // empty context, hedged (randomized) signing per FIPS 205 recommendation.
-            self.sk
-                .try_sign(msg, &[], true)
-                .expect("slh-dsa signing")
-                .to_vec()
-        }
     }
 
     impl SlhVerifier {
@@ -275,6 +254,43 @@ pub mod slh {
             self.pk.verify(msg, &arr, &[])
         }
     }
+
+    /// Log-operator signing key. Requires the `rng` feature (keygen + hedged signing).
+    #[cfg(feature = "rng")]
+    pub struct SlhSigner {
+        sk: pset::PrivateKey,
+        pk_bytes: [u8; PK_LEN],
+    }
+
+    #[cfg(feature = "rng")]
+    impl SlhSigner {
+        /// Generate a fresh keypair (uses the OS RNG via `getrandom`).
+        pub fn generate() -> Result<Self, &'static str> {
+            let (pk, sk) = pset::try_keygen()?;
+            Ok(Self {
+                sk,
+                pk_bytes: pk.into_bytes(),
+            })
+        }
+        /// The matching public verifier the client would receive out of band.
+        pub fn verifier(&self) -> SlhVerifier {
+            SlhVerifier::from_bytes(&self.pk_bytes).expect("own public key is valid")
+        }
+        pub fn public_key_bytes(&self) -> Vec<u8> {
+            self.pk_bytes.to_vec()
+        }
+    }
+
+    #[cfg(feature = "rng")]
+    impl SthSigner for SlhSigner {
+        fn sign(&self, msg: &[u8]) -> Vec<u8> {
+            // empty context, hedged (randomized) signing per FIPS 205 recommendation.
+            self.sk
+                .try_sign(msg, &[], true)
+                .expect("slh-dsa signing")
+                .to_vec()
+        }
+    }
 }
 
 // ----------------------------------------------------------------------------
@@ -292,9 +308,12 @@ pub mod kem {
     //! ciphertext (the key release) and a shared secret; the client decapsulates the
     //! ciphertext to recover the same secret. Both derive the session key with HKDF,
     //! transcript-bound to the attested measurement. Crate maintained, NOT audited.
-    use super::{sha256, Hash, KemPublicKey, Measurement, Nonce};
+    use super::{sha256, Hash, Measurement, Nonce};
     use hkdf::Hkdf;
     use sha2::Sha256;
+    #[cfg(feature = "rng")]
+    use super::KemPublicKey;
+    #[cfg(feature = "rng")]
     use x_wing::{
         Ciphertext, Decapsulate, DecapsulationKey, Encapsulate, EncapsulationKey, KeyExport, Kem,
         SharedKey, XWingKem,
@@ -305,11 +324,13 @@ pub mod kem {
     /// X-Wing public (encapsulation) key length in bytes (1216).
     pub const PUBLIC_KEY_LEN: usize = x_wing::ENCAPSULATION_KEY_SIZE;
 
+    #[cfg(feature = "rng")]
     fn shared_to_bytes(ss: &SharedKey) -> [u8; 32] {
         let mut b = [0u8; 32];
         b.copy_from_slice(&ss[..]);
         b
     }
+    #[cfg(feature = "rng")]
     fn ciphertext_from_bytes(bytes: &[u8]) -> Option<Ciphertext> {
         if bytes.len() != CIPHERTEXT_LEN {
             return None;
@@ -320,11 +341,14 @@ pub mod kem {
     }
 
     /// Client-side X-Wing keypair. The secret never leaves the client.
+    /// Requires the `rng` feature (keygen). Decapsulation itself uses no RNG.
+    #[cfg(feature = "rng")]
     pub struct ClientKeypair {
         sk: DecapsulationKey,
         pk_bytes: Vec<u8>,
     }
 
+    #[cfg(feature = "rng")]
     impl ClientKeypair {
         pub fn generate() -> Self {
             let (sk, pk) = XWingKem::generate_keypair();
@@ -346,6 +370,7 @@ pub mod kem {
 
     /// Keyserver side: encapsulate against a client public key.
     /// Returns `(ciphertext_bytes, shared_secret)`, or `None` if the key is malformed.
+    #[cfg(feature = "rng")]
     pub fn encapsulate(client_pubkey: &[u8]) -> Option<(Vec<u8>, [u8; 32])> {
         let ek = EncapsulationKey::try_from(client_pubkey).ok()?;
         let (ct, ss) = ek.encapsulate();

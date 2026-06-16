@@ -6,6 +6,7 @@ resolver = "2"
 members = [
     "crates/pqtl-core",
     "crates/pqtl-cli",
+    "crates/pqtl-wasm",
 ]
 
 [workspace.package]
