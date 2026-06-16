@@ -14,7 +14,7 @@ cat <<'EOF'
 
 Built. Now serve the web/ directory over HTTP (ES modules + fetch need a server):
 
-    cd web && python -m http.server 8080
+    cd web && python3 -m http.server 8080   # (or python)
 
 then open http://localhost:8080 — the honest receipt verifies; click "Tamper" to see it fail.
 

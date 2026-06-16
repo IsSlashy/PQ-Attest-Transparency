@@ -2,7 +2,8 @@
 
 A post-quantum **transparency layer** for confidential AI inference: an append-only,
 client-verifiable record of which loader builds a confidential-inference service runs —
-so a provider cannot *secretly* serve a targeted, backdoored build.
+so a provider cannot *secretly* serve a targeted, backdoored build (it makes such a build
+**undeniable, not undetectable**).
 
 Think *Certificate Transparency, for confidential inference, post-quantum, verified by the end user.*
 
@@ -66,8 +67,10 @@ Pitch rule: *"they can no longer lie in secret or rewrite history"* — never *"
 
 ## Prerequisites
 
-Rust (stable) for the CLI and tests. For the browser demo also: `wasm-pack`
-(`cargo install wasm-pack`), Node 18+, and Python 3.
+Rust (stable) for the CLI, tests, and bench. For the browser demo also: `wasm-pack`
+(`cargo install wasm-pack`), Node 18+, and Python 3. The **optional on-chain** program needs a
+Solana + Anchor toolchain and (on Windows) WSL — Node 20+ recommended, or Node 18 with
+`yarn install --ignore-engines`; see [`docs/CHAIN-ANCHOR.md`](./docs/CHAIN-ANCHOR.md).
 
 ## Run the CLI demo
 
@@ -101,6 +104,15 @@ cargo run -p pqtl-cli --bin pqtl-emit
 node scripts/wasm-smoke.cjs             # honest=accept, tampered=reject, split-view=reject
 ```
 
+## Verified end to end
+
+`cargo test` (13) · `pqtl-demo` (6 attack/defence scenarios) · `pqtl-bench` (release) · the WASM
+verifier (browser + a 5-case Node smoke test) — all on a stock Rust toolchain. The **optional**
+on-chain program is verified separately with `anchor test` (**WSL only** — Solana/Anchor toolchain
++ a local validator; see [`docs/CHAIN-ANCHOR.md`](./docs/CHAIN-ANCHOR.md)): build → deploy → a
+second root at one epoch is rejected. Nothing in the demos is faked beyond the documented mocks
+(the hardware quote, and the in-process witness/ledger stand-ins) — see [`THREAT-MODEL.md`](./THREAT-MODEL.md).
+
 ## Cost (the PQ tax)
 
 Full numbers in [`BENCHMARKS.md`](./BENCHMARKS.md). Headline: a receipt is ~10 KB (the STH
@@ -123,6 +135,7 @@ scripts/       build-web-demo.sh, wasm-smoke.cjs
 
 ## Documents
 
+- [`PITCH.md`](./PITCH.md) — what this is in plain terms, and what it does NOT claim.
 - [`THREAT-MODEL.md`](./THREAT-MODEL.md) — what is proven vs assumed vs mocked (read this).
 - [`BENCHMARKS.md`](./BENCHMARKS.md) — the "PQ tax": sizes vs classical, and latencies.
 - [`DECISIONS.md`](./DECISIONS.md) — ADRs + roadmap. [`RESEARCH.md`](./RESEARCH.md) — Phase 0.
