@@ -8,6 +8,7 @@
 //!
 //! The point: the client refuses a loader that classic attestation alone would accept.
 
+use pqtl_core::chain::{ChainAnchor, MockLedger};
 use pqtl_core::kem::{derive_session_key, encapsulate, ClientKeypair};
 use pqtl_core::log::{verify_consistency, TransparencyLog};
 use pqtl_core::slh::SlhSigner;
@@ -242,12 +243,46 @@ fn main() {
          au registre public. Le gain réel : NON-ÉQUIVOCATION + responsabilité, pas le blocage."
     );
 
+    // ---------------- Scenario 6: ChainAnchor — an immutable ledger blocks equivocation ----------------
+    println!("\n--- Scénario 6 : ChainAnchor — un registre public immuable bloque l'équivocation (sans témoins) ---");
+    let mut clog = TransparencyLog::new();
+    let cm = measurement_of("v2.0", b"<loader v2>");
+    let ci = clog.append(&cm);
+    let csth = clog.signed_tree_head(&signer);
+    let mut chain = ChainAnchor::new(MockLedger::new());
+    println!(
+        "[opérateur] publie la racine STH on-chain (epoch={}) : {}",
+        csth.tree_size,
+        if chain.submit(&csth) { "✅ inscrit" } else { "refusé (BUG)" }
+    );
+    // a compromised operator tries to publish a DIFFERENT root at the SAME epoch
+    let mut cfork = TransparencyLog::new();
+    cfork.append(&measurement_of("v2.0-EVIL", b"<evil loader>"));
+    let cfsth = cfork.signed_tree_head(&signer);
+    println!(
+        "[opérateur compromis] tente une 2e racine au MÊME epoch : {} — le registre est immuable",
+        if chain.submit(&cfsth) { "⚠️ accepté — BUG" } else { "❌ REJETÉ par la chaîne" }
+    );
+    let creceipt = Receipt {
+        quote: qp.quote(&nonce, &kem, &cm),
+        nonce: nonce.clone(),
+        kem_pubkey: kem.clone(),
+        kem_ciphertext: encapsulate(&kem.0).unwrap().0,
+        inclusion: clog.inclusion_proof(ci).unwrap(),
+        sth: csth.clone(),
+    };
+    match verify_receipt(&creceipt, &nonce, &qv, &verifier, &chain) {
+        Ok(()) => println!("[client] reçu vérifié contre l'ancre on-chain → ✅ (zéro fédération de témoins)"),
+        Err(e) => println!("[client] {e:?} (inattendu)"),
+    }
+
     println!(
         "\nRésumé : le client refuse un loader que l'attestation classique seule aurait accepté.\n\
          Ce que cette démo prouve : la NON-ÉQUIVOCATION (un build doit être publiquement loggé\n\
          pour qu'un reçu vérifiable existe), l'APPEND-ONLY (historique non réécrit),\n\
          un canal de session HNDL-safe (X-Wing), et l'anti-split-view par co-signature de témoins.\n\
          Et (scénario 5) : un backdoor LOGGÉ vérifie — le gain est la non-équivocation, pas le blocage.\n\
+         Et (scénario 6) : ancre on-chain — un registre immuable bloque l'équivocation sans fédération de témoins.\n\
          Vérifieur compilé en WASM. Limites & residual risks : voir THREAT-MODEL.md ; coûts : BENCHMARKS.md."
     );
 }

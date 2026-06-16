@@ -666,6 +666,92 @@ pub mod witness {
 }
 
 // ----------------------------------------------------------------------------
+// Optional on-chain anchoring (ChainAnchor, ADR-004): an immutable public ledger
+// ----------------------------------------------------------------------------
+
+pub mod chain {
+    //! Anchoring an STH root on a public, append-only ledger makes the log non-equivocal
+    //! WITHOUT a witness federation: the ledger itself rejects a second, different root at an
+    //! epoch it has already written. That removes the bootstrap/operate cost of witnesses — it
+    //! is NOT a performance argument (a chain write is slower; see ADR-004).
+    //!
+    //! Here the ledger is an in-process [`MockLedger`]; the real path is a tiny Solana program
+    //! (one account per epoch), built and described in `programs/sth-anchor` and
+    //! `docs/CHAIN-ANCHOR.md`. The client read is RNG-free → wasm-ok.
+    use super::{Anchor, Hash, SignedTreeHead};
+    use std::collections::HashMap;
+
+    /// A public append-only ledger keyed by epoch. Committing is IMMUTABLE per epoch: once
+    /// `(epoch -> root)` is written, that epoch can never be rewritten to a *different* root.
+    pub trait Ledger {
+        /// Commit `root` at `epoch`. Returns `true` if committed (or already equal — idempotent),
+        /// `false` if a DIFFERENT root is already committed there (the chain rejects equivocation).
+        fn submit(&mut self, epoch: u64, root: Hash) -> bool;
+        /// The root committed at `epoch`, if any.
+        fn read(&self, epoch: u64) -> Option<Hash>;
+    }
+
+    /// In-process stand-in for a public chain. Models the one property that matters: append-only
+    /// and immutable per epoch (a real Solana program enforces this with a PDA per epoch).
+    #[derive(Default)]
+    pub struct MockLedger {
+        entries: HashMap<u64, Hash>,
+    }
+
+    impl MockLedger {
+        pub fn new() -> Self {
+            Self::default()
+        }
+    }
+
+    impl Ledger for MockLedger {
+        fn submit(&mut self, epoch: u64, root: Hash) -> bool {
+            match self.entries.get(&epoch) {
+                Some(existing) => *existing == root, // idempotent if equal; reject if different
+                None => {
+                    self.entries.insert(epoch, root);
+                    true
+                }
+            }
+        }
+        fn read(&self, epoch: u64) -> Option<Hash> {
+            self.entries.get(&epoch).copied()
+        }
+    }
+
+    /// Anchor backed by a public ledger. A root is trusted iff the ledger holds it at the STH's
+    /// epoch (here, the tree size). The operator publishes via [`ChainAnchor::submit`]; a
+    /// conflicting publish at the same epoch is rejected by the ledger, so no witness federation
+    /// is needed to prevent equivocation.
+    pub struct ChainAnchor<L: Ledger> {
+        ledger: L,
+    }
+
+    impl<L: Ledger> ChainAnchor<L> {
+        pub fn new(ledger: L) -> Self {
+            Self { ledger }
+        }
+        /// Operator side: publish `(tree_size -> root)`. Returns `false` if the ledger already
+        /// holds a different root at that epoch (equivocation rejected by the chain).
+        pub fn submit(&mut self, sth: &SignedTreeHead) -> bool {
+            self.ledger.submit(sth.tree_size, sth.root)
+        }
+        pub fn ledger(&self) -> &L {
+            &self.ledger
+        }
+    }
+
+    impl<L: Ledger> Anchor for ChainAnchor<L> {
+        fn anchor(&mut self, sth: &SignedTreeHead) {
+            self.submit(sth);
+        }
+        fn is_anchored(&self, sth: &SignedTreeHead) -> bool {
+            self.ledger.read(sth.tree_size) == Some(sth.root)
+        }
+    }
+}
+
+// ----------------------------------------------------------------------------
 // The transparency log
 // ----------------------------------------------------------------------------
 
@@ -1369,5 +1455,28 @@ mod tests {
         assert!(anchor.ingest(&cosig(&sth_a), None)); // trust (1, root_a)
         assert!(!anchor.ingest(&cosig(&sth_b), None)); // same size, different root → rejected
         assert!(anchor.is_anchored(&sth_a) && !anchor.is_anchored(&sth_b));
+    }
+
+    #[test]
+    fn chain_anchor_immutable_ledger_blocks_equivocation() {
+        use super::chain::{ChainAnchor, MockLedger};
+        use super::log::TransparencyLog;
+        use super::slh::SlhSigner;
+
+        let signer = SlhSigner::generate().unwrap();
+        let mut a = TransparencyLog::new();
+        a.append(&m("a"));
+        let sth_a = a.signed_tree_head(&signer);
+        let mut b = TransparencyLog::new();
+        b.append(&m("b"));
+        let sth_b = b.signed_tree_head(&signer);
+        assert_ne!(sth_a.root, sth_b.root);
+
+        let mut anchor = ChainAnchor::new(MockLedger::new());
+        assert!(anchor.submit(&sth_a)); // honest publish at epoch 1
+        assert!(anchor.is_anchored(&sth_a));
+        assert!(!anchor.submit(&sth_b)); // equivocating publish at the same epoch → ledger rejects
+        assert!(!anchor.is_anchored(&sth_b)); // the conflicting root is never trusted
+        assert!(anchor.submit(&sth_a)); // idempotent re-publish of the same root is fine
     }
 }
