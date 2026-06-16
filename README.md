@@ -6,11 +6,12 @@ so a provider cannot *secretly* serve a targeted, backdoored build.
 
 Think *Certificate Transparency, for confidential inference, post-quantum, verified by the end user.*
 
-> **Status: M0–M3 done. Cryptography is real end to end.**
-> STH signed with **SLH-DSA** (FIPS 205); Merkle log with RFC 6962 **inclusion +
-> consistency** proofs; HNDL-safe session binding with **X-Wing** (X25519+ML-KEM-768);
-> and a **client-side receipt verifier that compiles to WebAssembly** and runs in the
-> browser with no randomness and no network. Remaining: M4 witness co-signing, M5 bench.
+> **Status: M0–M4 done — a complete, Web2-deployable MVP. Cryptography is real end to end.**
+> STH signed with **SLH-DSA** (FIPS 205); Merkle log with RFC 6962 **inclusion + consistency**
+> proofs; HNDL-safe session binding with **X-Wing** (X25519+ML-KEM-768); **anti-split-view by
+> independent witness co-signing** (no blockchain); and a **client-side receipt verifier that
+> compiles to WebAssembly** and runs in the browser with no randomness and no network.
+> Remaining: M5 (size/latency bench) and an optional on-chain `ChainAnchor`.
 > Roadmap and decisions: see [`DECISIONS.md`](./DECISIONS.md). Research: [`RESEARCH.md`](./RESEARCH.md).
 
 ## The problem (threat model — read this first)

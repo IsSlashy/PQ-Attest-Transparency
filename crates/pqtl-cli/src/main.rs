@@ -12,6 +12,7 @@ use pqtl_core::kem::{derive_session_key, encapsulate, ClientKeypair};
 use pqtl_core::log::{verify_consistency, TransparencyLog};
 use pqtl_core::slh::SlhSigner;
 use pqtl_core::verify::verify_receipt;
+use pqtl_core::witness::{Witness, WitnessAnchor};
 use pqtl_core::*;
 
 fn measurement_of(label: &str, build: &[u8]) -> Measurement {
@@ -48,8 +49,8 @@ fn keyserver_issue(
 }
 
 fn main() {
-    println!("== PQ-Attest-Transparency — M2 : binding HNDL-safe X25519+ML-KEM-768 (X-Wing) ==");
-    println!("   (STH = SLH-DSA réel ; log = inclusion + consistance RFC6962)\n");
+    println!("== PQ-Attest-Transparency — démo M0–M4 (crypto réelle) ==");
+    println!("   STH=SLH-DSA · log=RFC6962 inclusion+consistance · binding=X-Wing · anti-split-view=témoins\n");
 
     // Public transparency log + its operator's SLH-DSA signer + the anchor.
     let mut log = TransparencyLog::new();
@@ -160,11 +161,56 @@ fn main() {
         println!("❌ REJETÉE → réécriture d'historique détectée");
     }
 
+    // ---------------- Scenario 4: Web2 anti-split-view via witness co-signing ----------------
+    println!("\n--- Scénario 4 : anti-split-view par co-signature de témoins (Web2, sans blockchain) ---");
+    let mut witnesses: Vec<Witness> = (0..3).map(Witness::generate).collect();
+    let trusted: Vec<_> = witnesses.iter().map(|w| (w.id(), w.verifier())).collect();
+    let mut wanchor = WitnessAnchor::new(trusted, 2);
+    println!("[client] 3 témoins indépendants, seuil 2.");
+
+    // The honest STH is cosigned by the witnesses → the client gets a trusted root.
+    let sth_now = log.signed_tree_head(&signer);
+    let cosigs: Vec<_> = witnesses
+        .iter_mut()
+        .filter_map(|w| w.cosign(&sth_now, None))
+        .collect();
+    let cosigned = CosignedSth {
+        sth: sth_now.clone(),
+        cosignatures: cosigs,
+    };
+    if wanchor.ingest(&cosigned) {
+        println!(
+            "[client] STH honnête co-signé par {} témoins ≥ seuil → racine de confiance → ✅",
+            cosigned.cosignatures.len()
+        );
+    }
+
+    // An attacker rewrites history and tries to get it cosigned. Honest witnesses refuse
+    // (no valid consistency proof from the STH they already attested), so the forged
+    // cosigned-STH never reaches the threshold and the client refuses the root.
+    let mut fork = TransparencyLog::new();
+    fork.append(&measurement_of("v1.0-rewritten", b"<swapped loader>"));
+    let forked_sth = fork.signed_tree_head(&signer);
+    let accepting = witnesses
+        .iter_mut()
+        .filter_map(|w| w.cosign(&forked_sth, None))
+        .count();
+    let forged = CosignedSth {
+        sth: forked_sth.clone(),
+        cosignatures: Vec::new(),
+    };
+    print!("[attaquant] tente de faire co-signer un historique réécrit : {accepting}/3 témoins acceptent. ");
+    if wanchor.ingest(&forged) {
+        println!("⚠️  ancré — BUG");
+    } else {
+        println!("→ < seuil, racine non ancrée → ❌ SPLIT-VIEW BLOQUÉ");
+    }
+
     println!(
         "\nRésumé : le client refuse un loader que l'attestation classique seule aurait accepté.\n\
          Ce que cette démo prouve : la NON-ÉQUIVOCATION (un build doit être publiquement loggé\n\
          pour qu'un reçu vérifiable existe), l'APPEND-ONLY (historique non réécrit),\n\
-         et un canal de session HNDL-safe (X-Wing). Reste : co-signature de témoins (M4)\n\
-         et vérifieur WASM (M3)."
+         un canal de session HNDL-safe (X-Wing), et l'anti-split-view par co-signature de témoins.\n\
+         Vérifieur compilé en WASM (M3). Reste : bench (M5) + ChainAnchor on-chain (optionnel)."
     );
 }

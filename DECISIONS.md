@@ -77,7 +77,7 @@
 - **M1 — log réel** : Merkle append-only (port p01) + STH signé **SLH-DSA** (crate) + preuves d'inclusion & de consistance.
 - **M2 — binding HNDL-safe** : KEM hybride **X25519 + ML-KEM-768** lié dans `report_data` via `QuoteProvider` mock. *✅ FAIT — X-Wing (`x-wing` crate), ct 1120 o ; canal de session HKDF transcript-bound vérifié des deux côtés ; 8 tests verts.*
 - **M3 — vérifieur client** : crate `verify` compilé en **CLI + WASM** (le livrable central). *✅ FAIT — `pqtl-wasm` (wasm-bindgen), build wasm-pack web+node, vérifieur RNG-free (feature-gating `rng` + serde) ; prouvé en navigateur et en Node : honnête=accept, falsifié=`SthSignatureInvalid`, split-view=`NotAnchored`.*
-- **M4 — anti-split-view Web2** : `WitnessAnchor` (co-signature de STH). MVP complet ici, zéro blockchain.
+- **M4 — anti-split-view Web2** : `WitnessAnchor` (co-signature de STH). MVP complet ici, zéro blockchain. *✅ FAIT — module `witness` : `Witness` (cosign + refus de fork via consistance), `WitnessAnchor` (quorum, RNG-free → wasm-ok) ; 2 tests + scénario 4 de la démo.*
 - **M5 — bench + honnêteté** : tailles (SLH-DSA vs ECC, ct ML-KEM, preuve d'inclusion), latence vérif, README threat-model (prouvé / supposé / mocké).
 - **(Optionnel) `ChainAnchor`** : ancrage on-chain via verifier p01. Hors critère < 5 min.
 
@@ -111,4 +111,4 @@ Reprend RESEARCH §5, **figé** (plus de scope creep sans nouvel ADR) :
 - [x] **M0 — squelette livré** (build + tests + démo).
 - [~] M1 — **STH SLH-DSA + inclusion + consistance RFC6962 faits** (7 tests verts ; bench sig 7856 o / pk 32 o ; consistance validée tailles 1..33 + test de réécriture d'historique). Reste : Merkle incrémental (optim O(log n), différable).
 
-→ **M0–M3 verts** (8 tests + smoke WASM). Crypto réelle partout : SLH-DSA + RFC6962 inclusion/consistance + X-Wing, et **vérifieur compilé en WASM, vérifié en navigateur + Node** (honnête=accept, falsifié/split-view=reject). Reste : **M4 — `WitnessAnchor` (co-signature Web2, anti-split-view)**, M5 — bench/README, puis `ChainAnchor` optionnel.
+→ **M0–M4 verts** (10 tests + smoke WASM). **MVP complet et défendable EN WEB2 PUR** : SLH-DSA + RFC6962 inclusion/consistance + X-Wing (HNDL) + co-signature de témoins (anti-split-view), vérifieur compilé en WASM. Reste : **M5 — bench + README threat-model**, puis `ChainAnchor` on-chain (optionnel).
