@@ -8,6 +8,7 @@
 //!
 //! The point: the client refuses a loader that classic attestation alone would accept.
 
+use pqtl_core::kem::{derive_session_key, encapsulate, ClientKeypair};
 use pqtl_core::log::{verify_consistency, TransparencyLog};
 use pqtl_core::slh::SlhSigner;
 use pqtl_core::verify::verify_receipt;
@@ -21,8 +22,9 @@ fn hex8(h: &Hash) -> String {
     h.iter().take(8).map(|b| format!("{b:02x}")).collect()
 }
 
-/// Keyserver release policy: issue a key + a client-verifiable receipt ONLY if the
-/// attested measurement is present in the public log. `None` = release refused.
+/// Keyserver release policy: issue the key-release (an X-Wing ciphertext) + a
+/// client-verifiable receipt ONLY if the attested measurement is in the public log.
+/// Returns the receipt and the keyserver-side session key; `None` = release refused.
 fn keyserver_issue(
     log: &TransparencyLog,
     signer: &dyn SthSigner,
@@ -30,20 +32,24 @@ fn keyserver_issue(
     nonce: &Nonce,
     kem: &KemPublicKey,
     measurement: &Measurement,
-) -> Option<Receipt> {
+) -> Option<(Receipt, [u8; 32])> {
     let idx = log.find(measurement)?; // policy gate: must be publicly logged
-    Some(Receipt {
+    let (ciphertext, shared) = encapsulate(&kem.0)?; // HNDL-safe key release
+    let session_key = derive_session_key(&shared, nonce, &ciphertext, measurement);
+    let receipt = Receipt {
         quote: qp.quote(nonce, kem, measurement),
         nonce: nonce.clone(),
         kem_pubkey: kem.clone(),
+        kem_ciphertext: ciphertext,
         inclusion: log.inclusion_proof(idx)?,
         sth: log.signed_tree_head(signer),
-    })
+    };
+    Some((receipt, session_key))
 }
 
 fn main() {
-    println!("== PQ-Attest-Transparency — M1 : STH SLH-DSA + consistance RFC6962 ==");
-    println!("   (binding ML-KEM = placeholder jusqu'en M2)\n");
+    println!("== PQ-Attest-Transparency — M2 : binding HNDL-safe X25519+ML-KEM-768 (X-Wing) ==");
+    println!("   (STH = SLH-DSA réel ; log = inclusion + consistance RFC6962)\n");
 
     // Public transparency log + its operator's SLH-DSA signer + the anchor.
     let mut log = TransparencyLog::new();
@@ -69,16 +75,30 @@ fn main() {
     );
 
     let nonce = Nonce(sha256(&[b"client-session-nonce-1"]));
-    let kem = KemPublicKey(b"<client ML-KEM pubkey placeholder>".to_vec());
+    let client = ClientKeypair::generate();
+    let kem = client.public_key(); // real X-Wing public key (1216 B)
 
     // ---------------- Scenario 1: honest, logged build ----------------
     println!("\n--- Scénario 1 : build loggé + attesté ---");
     match keyserver_issue(&log, &signer, &qp, &nonce, &kem, &honest) {
-        Some(receipt) => {
-            print!("[keyserver] mesure présente dans le log → clé libérée, reçu émis.\n            ");
+        Some((receipt, server_key)) => {
+            print!(
+                "[keyserver] mesure présente → clé encapsulée (X-Wing, ct {} o), reçu émis.\n            ",
+                receipt.kem_ciphertext.len()
+            );
             match verify_receipt(&receipt, &nonce, &verifier, &anchor) {
                 Ok(()) => println!("[client] reçu vérifié (binding+inclusion+STH+anchor) → ✅ ACCEPTÉ"),
                 Err(e) => println!("[client] ❌ refus inattendu : {e:?}"),
+            }
+            // Establish the HNDL-safe session key by decapsulating; confirm it matches.
+            let shared = client
+                .decapsulate(&receipt.kem_ciphertext)
+                .expect("décapsulation");
+            let client_key = derive_session_key(&shared, &nonce, &receipt.kem_ciphertext, &honest);
+            if client_key == server_key {
+                println!("            [client] canal de session établi : clé identique des deux côtés (HNDL-safe)");
+            } else {
+                println!("            [client] ❌ clé de session divergente (BUG)");
             }
         }
         None => println!("[keyserver] refus inattendu pour un build honnête (BUG)"),
@@ -100,6 +120,7 @@ fn main() {
         quote: qp.quote(&nonce, &kem, &ghost),
         nonce: nonce.clone(),
         kem_pubkey: kem.clone(),
+        kem_ciphertext: Vec::new(),
         inclusion: log.inclusion_proof(idx).unwrap(), // proof for the HONEST leaf
         sth: log.signed_tree_head(&signer),
     };
@@ -141,8 +162,9 @@ fn main() {
 
     println!(
         "\nRésumé : le client refuse un loader que l'attestation classique seule aurait accepté.\n\
-         Ce que ce squelette prouve : la NON-ÉQUIVOCATION (un build doit être publiquement loggé\n\
-         pour qu'un reçu vérifiable existe), et l'APPEND-ONLY (historique non réécrit).\n\
-         Reste : binding ML-KEM hybride réel (M2), co-signature de témoins (M4)."
+         Ce que cette démo prouve : la NON-ÉQUIVOCATION (un build doit être publiquement loggé\n\
+         pour qu'un reçu vérifiable existe), l'APPEND-ONLY (historique non réécrit),\n\
+         et un canal de session HNDL-safe (X-Wing). Reste : co-signature de témoins (M4)\n\
+         et vérifieur WASM (M3)."
     );
 }

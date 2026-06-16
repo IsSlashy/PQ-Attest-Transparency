@@ -75,7 +75,7 @@
 
 - **M0 — squelette qui marche, crypto PLACEHOLDER** (SHA-256 stand-ins). Les deux chemins ✅/❌ de bout en bout. *✅ FAIT — `cargo build` + 3 tests verts (inclusion 1..33, round-trip, attaque) + démo CLI.*
 - **M1 — log réel** : Merkle append-only (port p01) + STH signé **SLH-DSA** (crate) + preuves d'inclusion & de consistance.
-- **M2 — binding HNDL-safe** : KEM hybride **X25519 + ML-KEM-768** lié dans `report_data` via `QuoteProvider` mock.
+- **M2 — binding HNDL-safe** : KEM hybride **X25519 + ML-KEM-768** lié dans `report_data` via `QuoteProvider` mock. *✅ FAIT — X-Wing (`x-wing` crate), ct 1120 o ; canal de session HKDF transcript-bound vérifié des deux côtés ; 8 tests verts.*
 - **M3 — vérifieur client** : crate `verify` compilé en **CLI + WASM** (le livrable central).
 - **M4 — anti-split-view Web2** : `WitnessAnchor` (co-signature de STH). MVP complet ici, zéro blockchain.
 - **M5 — bench + honnêteté** : tailles (SLH-DSA vs ECC, ct ML-KEM, preuve d'inclusion), latence vérif, README threat-model (prouvé / supposé / mocké).
@@ -111,4 +111,4 @@ Reprend RESEARCH §5, **figé** (plus de scope creep sans nouvel ADR) :
 - [x] **M0 — squelette livré** (build + tests + démo).
 - [~] M1 — **STH SLH-DSA + inclusion + consistance RFC6962 faits** (7 tests verts ; bench sig 7856 o / pk 32 o ; consistance validée tailles 1..33 + test de réécriture d'historique). Reste : Merkle incrémental (optim O(log n), différable).
 
-→ Décisions écrites, dossiers persistés, **M0 vert**, **M1 quasi complet** (SLH-DSA + inclusion + consistance réels, démo à 3 scénarios). Prochain : **M2 — binding ML-KEM hybride réel**.
+→ **M0, M1, M2 verts** (8 tests). Crypto réelle branchée partout : SLH-DSA (STH) + RFC6962 inclusion/consistance + X-Wing (binding HNDL-safe). Démo 3 scénarios. Reste : **M3 — vérifieur WASM**, **M4 — `WitnessAnchor` (co-signature Web2)**, M5 — bench/README, puis `ChainAnchor` optionnel.

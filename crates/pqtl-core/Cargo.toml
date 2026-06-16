@@ -10,3 +10,9 @@ sha2 = { workspace = true }
 # Real post-quantum STH signing (M1). FIPS 205 SLH-DSA; no_std, heap-free verify
 # (clean wasm32 verifier). Maintained + vector-tested, NOT independently audited.
 fips205 = "0.4.0"
+# Real HNDL-safe session binding (M2). X-Wing = hybrid X25519 + ML-KEM-768 with a
+# single combiner (draft-connolly-cfrg-xwing-kem). Maintained, NOT audited.
+# `getrandom` enables the OS-RNG keygen/encapsulate convenience methods.
+x-wing = { version = "0.1.0-rc.0", features = ["getrandom"] }
+# HKDF-SHA256 for transcript-bound session-key derivation.
+hkdf = "0.12"

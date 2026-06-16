@@ -5,9 +5,9 @@
 //! # Status: M1 in progress
 //! STH signing is now **real SLH-DSA** (FIPS 205, see [`slh`]). Still placeholder /
 //! pending:
-//! - the session binding — M2 wires a real **hybrid X25519 + ML-KEM-768** KEM; for now
-//!   the `report_data` hash is real and domain-separated, but the KEM public key it
-//!   commits to is placeholder bytes;
+//! - the session binding is now a real **hybrid X25519 + ML-KEM-768** KEM (X-Wing, see
+//!   [`kem`]): `report_data` commits to a real 1216-byte public key, and the keyserver's
+//!   ciphertext establishes an HNDL-safe session key the client recovers by decapsulation;
 //! - the Merkle log now has RFC 6962 inclusion AND **consistency proofs** (the "history
 //!   cannot be rewritten" property); it is not yet incremental (an O(log n) optimization).
 //!
@@ -93,6 +93,9 @@ pub struct Receipt {
     pub quote: Quote,
     pub nonce: Nonce,
     pub kem_pubkey: KemPublicKey,
+    /// The keyserver's X-Wing ciphertext (key release). The client decapsulates it
+    /// with its secret key to recover the session shared secret (M2).
+    pub kem_ciphertext: Vec<u8>,
     pub inclusion: InclusionProof,
     pub sth: SignedTreeHead,
 }
@@ -271,6 +274,98 @@ pub mod slh {
             };
             self.pk.verify(msg, &arr, &[])
         }
+    }
+}
+
+// ----------------------------------------------------------------------------
+// Real HNDL-safe session binding (M2): hybrid X25519 + ML-KEM-768 (X-Wing)
+// ----------------------------------------------------------------------------
+
+pub mod kem {
+    //! Session key establishment with **X-Wing** (hybrid X25519 + ML-KEM-768,
+    //! draft-connolly-cfrg-xwing-kem). HNDL-safe: recovering the session key requires
+    //! breaking BOTH X25519 *and* ML-KEM-768, so a ciphertext harvested today is not
+    //! decryptable by a future quantum adversary.
+    //!
+    //! Flow: the client generates a keypair and puts its public key in the attestation
+    //! binding (`report_data`). The keyserver encapsulates against it, yielding a
+    //! ciphertext (the key release) and a shared secret; the client decapsulates the
+    //! ciphertext to recover the same secret. Both derive the session key with HKDF,
+    //! transcript-bound to the attested measurement. Crate maintained, NOT audited.
+    use super::{sha256, Hash, KemPublicKey, Measurement, Nonce};
+    use hkdf::Hkdf;
+    use sha2::Sha256;
+    use x_wing::{
+        Ciphertext, Decapsulate, DecapsulationKey, Encapsulate, EncapsulationKey, KeyExport, Kem,
+        SharedKey, XWingKem,
+    };
+
+    /// X-Wing ciphertext length in bytes (1120).
+    pub const CIPHERTEXT_LEN: usize = x_wing::CIPHERTEXT_SIZE;
+    /// X-Wing public (encapsulation) key length in bytes (1216).
+    pub const PUBLIC_KEY_LEN: usize = x_wing::ENCAPSULATION_KEY_SIZE;
+
+    fn shared_to_bytes(ss: &SharedKey) -> [u8; 32] {
+        let mut b = [0u8; 32];
+        b.copy_from_slice(&ss[..]);
+        b
+    }
+    fn ciphertext_from_bytes(bytes: &[u8]) -> Option<Ciphertext> {
+        if bytes.len() != CIPHERTEXT_LEN {
+            return None;
+        }
+        let mut ct = Ciphertext::default();
+        ct.copy_from_slice(bytes);
+        Some(ct)
+    }
+
+    /// Client-side X-Wing keypair. The secret never leaves the client.
+    pub struct ClientKeypair {
+        sk: DecapsulationKey,
+        pk_bytes: Vec<u8>,
+    }
+
+    impl ClientKeypair {
+        pub fn generate() -> Self {
+            let (sk, pk) = XWingKem::generate_keypair();
+            ClientKeypair {
+                sk,
+                pk_bytes: pk.to_bytes().to_vec(),
+            }
+        }
+        /// The public key, ready to embed in the attestation binding.
+        pub fn public_key(&self) -> KemPublicKey {
+            KemPublicKey(self.pk_bytes.clone())
+        }
+        /// Decapsulate the keyserver's ciphertext into the 32-byte shared secret.
+        pub fn decapsulate(&self, ciphertext: &[u8]) -> Option<[u8; 32]> {
+            let ct = ciphertext_from_bytes(ciphertext)?;
+            Some(shared_to_bytes(&self.sk.decapsulate(&ct)))
+        }
+    }
+
+    /// Keyserver side: encapsulate against a client public key.
+    /// Returns `(ciphertext_bytes, shared_secret)`, or `None` if the key is malformed.
+    pub fn encapsulate(client_pubkey: &[u8]) -> Option<(Vec<u8>, [u8; 32])> {
+        let ek = EncapsulationKey::try_from(client_pubkey).ok()?;
+        let (ct, ss) = ek.encapsulate();
+        Some((ct.to_vec(), shared_to_bytes(&ss)))
+    }
+
+    /// HKDF-SHA256 session key, transcript-bound to the attested context:
+    /// `HKDF(ikm = xwing_ss, info = H("pqtl:session-v1" ‖ nonce ‖ ciphertext ‖ measurement))`.
+    pub fn derive_session_key(
+        shared_secret: &[u8; 32],
+        nonce: &Nonce,
+        ciphertext: &[u8],
+        measurement: &Measurement,
+    ) -> Hash {
+        let transcript = sha256(&[b"pqtl:session-v1", &nonce.0, ciphertext, &measurement.0]);
+        let hk = Hkdf::<Sha256>::new(None, shared_secret);
+        let mut okm = [0u8; 32];
+        hk.expand(&transcript, &mut okm)
+            .expect("32 bytes is a valid HKDF-SHA256 output length");
+        okm
     }
 }
 
@@ -653,6 +748,7 @@ mod tests {
             quote: qp.quote(&nonce, &kem, &honest),
             nonce: nonce.clone(),
             kem_pubkey: kem.clone(),
+            kem_ciphertext: Vec::new(),
             inclusion: log.inclusion_proof(idx).unwrap(),
             sth: log.signed_tree_head(&signer),
         };
@@ -664,6 +760,7 @@ mod tests {
             quote: qp.quote(&nonce, &kem, &ghost),
             nonce: nonce.clone(),
             kem_pubkey: kem.clone(),
+            kem_ciphertext: Vec::new(),
             inclusion: log.inclusion_proof(idx).unwrap(),
             sth: log.signed_tree_head(&signer),
         };
@@ -707,6 +804,7 @@ mod tests {
             quote: qp.quote(&nonce, &kem, &honest),
             nonce: nonce.clone(),
             kem_pubkey: kem.clone(),
+            kem_ciphertext: Vec::new(),
             inclusion: log.inclusion_proof(idx).unwrap(),
             sth: log.signed_tree_head(&signer),
         };
@@ -760,5 +858,33 @@ mod tests {
         let mut fork = TransparencyLog::new();
         fork.append(&m("a-rewritten"));
         assert!(!verify_consistency(&proof, &fork.root(), &root3));
+    }
+
+    #[test]
+    fn xwing_kem_channel_agrees() {
+        use super::kem::{derive_session_key, encapsulate, ClientKeypair, CIPHERTEXT_LEN};
+        let client = ClientKeypair::generate();
+        let pk = client.public_key();
+
+        let (ct, server_ss) = encapsulate(&pk.0).expect("valid pubkey");
+        assert_eq!(ct.len(), CIPHERTEXT_LEN);
+        let client_ss = client.decapsulate(&ct).expect("valid ciphertext");
+        assert_eq!(server_ss, client_ss, "shared secret must agree");
+
+        let nonce = Nonce(sha256(&[b"n"]));
+        let meas = m("loader");
+        let k_server = derive_session_key(&server_ss, &nonce, &ct, &meas);
+        let k_client = derive_session_key(&client_ss, &nonce, &ct, &meas);
+        assert_eq!(k_server, k_client, "derived session keys must match");
+
+        // A tampered ciphertext yields a different secret (ML-KEM implicit rejection),
+        // so the derived session key diverges — the channel fails closed.
+        let mut bad = ct.clone();
+        bad[0] ^= 0x01;
+        let bad_ss = client.decapsulate(&bad).expect("still parses");
+        assert_ne!(bad_ss, client_ss, "tampered ciphertext must not agree");
+
+        // A malformed (wrong-length) public key is rejected.
+        assert!(encapsulate(b"too-short").is_none());
     }
 }
