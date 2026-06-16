@@ -8,7 +8,10 @@
 
 use pqtl_core::slh::SlhVerifier;
 use pqtl_core::verify::verify_receipt;
-use pqtl_core::{Anchor, Hash, LocalAnchor, MockHardwareRoot, Nonce, Receipt, SignedTreeHead};
+use pqtl_core::witness::WitnessAnchor;
+use pqtl_core::{
+    Anchor, CosignedSth, Hash, LocalAnchor, MockHardwareRoot, Nonce, Receipt, SignedTreeHead,
+};
 use wasm_bindgen::prelude::*;
 
 fn hex32(s: &str) -> Result<Hash, String> {
@@ -82,6 +85,108 @@ pub fn verify_receipt_json(
         Ok(()) => verdict(
             true,
             "quote signature + binding + STH signature (SLH-DSA) + Merkle inclusion + anchored root all verified",
+        ),
+        Err(e) => verdict(false, &format!("{e:?}")),
+    }
+}
+
+/// Verify a receipt AND the witness quorum that anchors its STH — the full client check the
+/// shipped browser deliverable should run. Instead of trusting a supplied root, the client
+/// verifies that a threshold of its OWN pinned witnesses cosigned the receipt's STH (and that
+/// the quorum does not equivocate).
+///
+/// - `cosigned_sth_json`: a `CosignedSth` = the receipt's STH + the witness cosignatures.
+/// - `witnesses_json`: `[{ "id": u32, "pubkey_hex": "<SLH-DSA pubkey hex>" }, ...]` — the
+///   witness set the client pins out of band (NOT obtained from the provider).
+/// - `threshold`: how many DISTINCT trusted witnesses must have cosigned.
+#[wasm_bindgen]
+pub fn verify_receipt_full(
+    receipt_json: &str,
+    expected_nonce_hex: &str,
+    sth_pubkey_hex: &str,
+    hardware_root_pubkey_hex: &str,
+    cosigned_sth_json: &str,
+    witnesses_json: &str,
+    threshold: u32,
+) -> String {
+    let receipt: Receipt = match serde_json::from_str(receipt_json) {
+        Ok(r) => r,
+        Err(e) => return verdict(false, &format!("receipt JSON: {e}")),
+    };
+    let cosigned: CosignedSth = match serde_json::from_str(cosigned_sth_json) {
+        Ok(c) => c,
+        Err(e) => return verdict(false, &format!("cosigned-STH JSON: {e}")),
+    };
+    let nonce = match hex32(expected_nonce_hex) {
+        Ok(h) => Nonce(h),
+        Err(e) => return verdict(false, &format!("nonce: {e}")),
+    };
+    let verifier = match hex::decode(sth_pubkey_hex.trim())
+        .ok()
+        .and_then(|b| SlhVerifier::from_bytes(&b).ok())
+    {
+        Some(v) => v,
+        None => return verdict(false, "bad STH public key"),
+    };
+    let quote_verifier = match hex::decode(hardware_root_pubkey_hex.trim())
+        .ok()
+        .and_then(|b| MockHardwareRoot::from_bytes(&b).ok())
+    {
+        Some(q) => q,
+        None => return verdict(false, "bad hardware-root public key"),
+    };
+
+    // Build the client's pinned witness set.
+    let witnesses_val: serde_json::Value = match serde_json::from_str(witnesses_json) {
+        Ok(v) => v,
+        Err(e) => return verdict(false, &format!("witnesses JSON: {e}")),
+    };
+    let arr = match witnesses_val.as_array() {
+        Some(a) => a,
+        None => return verdict(false, "witnesses must be a JSON array"),
+    };
+    let mut trusted = Vec::with_capacity(arr.len());
+    for w in arr {
+        let id = match w.get("id").and_then(|v| v.as_u64()) {
+            Some(i) => i as u32,
+            None => return verdict(false, "witness missing numeric id"),
+        };
+        let pk_hex = match w.get("pubkey_hex").and_then(|v| v.as_str()) {
+            Some(s) => s,
+            None => return verdict(false, "witness missing pubkey_hex"),
+        };
+        let v = match hex::decode(pk_hex.trim())
+            .ok()
+            .and_then(|b| SlhVerifier::from_bytes(&b).ok())
+        {
+            Some(v) => v,
+            None => return verdict(false, &format!("bad witness pubkey (id {id})")),
+        };
+        if trusted.iter().any(|(tid, _)| *tid == id) {
+            return verdict(false, &format!("duplicate witness id {id} in pinned set"));
+        }
+        trusted.push((id, v));
+    }
+
+    // The cosigned STH must be the receipt's OWN STH (size + root), else the quorum is for a
+    // different tree and would not legitimately anchor this receipt.
+    if cosigned.sth.tree_size != receipt.sth.tree_size || cosigned.sth.root != receipt.sth.root {
+        return verdict(false, "cosigned STH does not match the receipt's STH");
+    }
+
+    if threshold == 0 {
+        return verdict(false, "threshold must be >= 1");
+    }
+    // Verify the witness quorum CLIENT-SIDE; only then is the root anchored.
+    let mut anchor = WitnessAnchor::new(trusted, threshold as usize);
+    if !anchor.ingest(&cosigned, None) {
+        return verdict(false, "witness quorum not reached (or equivocation detected)");
+    }
+
+    match verify_receipt(&receipt, &nonce, &quote_verifier, &verifier, &anchor) {
+        Ok(()) => verdict(
+            true,
+            "quote + binding + STH signature + Merkle inclusion + WITNESS-QUORUM-anchored root all verified",
         ),
         Err(e) => verdict(false, &format!("{e:?}")),
     }

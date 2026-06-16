@@ -5,6 +5,7 @@
 use pqtl_core::kem::{self, ClientKeypair};
 use pqtl_core::log::TransparencyLog;
 use pqtl_core::slh::SlhSigner;
+use pqtl_core::witness::Witness;
 use pqtl_core::*;
 
 fn main() {
@@ -31,12 +32,32 @@ fn main() {
         sth: sth.clone(),
     };
 
+    // Witnesses cosign the honest STH. NOTE: bundling their public keys into the sample below is
+    // a DEMO convenience only — a real client MUST pin the witness set out of band, independent of
+    // the (provider-produced) receipt, or the anti-split-view property collapses.
+    let mut witnesses: Vec<Witness> = (0..3).map(Witness::generate).collect();
+    let cosignatures: Vec<_> = witnesses
+        .iter_mut()
+        .filter_map(|w| w.cosign(&sth, None))
+        .collect();
+    let cosigned = CosignedSth {
+        sth: sth.clone(),
+        cosignatures,
+    };
+    let witness_keys: Vec<_> = witnesses
+        .iter()
+        .map(|w| serde_json::json!({ "id": w.id(), "pubkey_hex": hex::encode(w.public_key_bytes()) }))
+        .collect();
+
     let bundle = serde_json::json!({
         "receipt": receipt,
         "expected_nonce_hex": hex::encode(nonce.0),
         "sth_pubkey_hex": hex::encode(signer.public_key_bytes()),
         "hardware_root_pubkey_hex": hex::encode(qp.hardware_root_pubkey()),
         "trusted_root_hex": hex::encode(sth.root),
+        "cosigned_sth": cosigned,
+        "witnesses": witness_keys,
+        "threshold": 2,
     });
 
     std::fs::create_dir_all("web").expect("create web/");

@@ -606,6 +606,11 @@ pub mod witness {
             let size = cosigned.sth.tree_size;
             let root = cosigned.sth.root;
 
+            // A zero threshold would "trust" a root with no cosignatures at all — reject it.
+            if self.threshold == 0 {
+                return false;
+            }
+
             // (a) quorum of distinct, valid cosignatures
             let msg = cosignature_bytes(size, &root);
             let mut seen = HashSet::new();

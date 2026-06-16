@@ -5,8 +5,9 @@
 > `RESEARCH.md` §6. The pitch rule from ADR-006 binds this whole document: *"they can no
 > longer lie in secret or rewrite history"* — never *"you will know if it is backdoored."*
 >
-> Date: 2026-06-16. Status: M0–M4 complete (SLH-DSA STH, RFC 6962 inclusion + consistency,
-> X-Wing session binding, witness anti-split-view, WASM verifier); single-machine simulation.
+> Date: 2026-06-16. Status: M0–M6 (SLH-DSA STH; RFC 6962 inclusion + consistency; X-Wing binding;
+> mocked-hardware-root quote verification; witness anti-split-view, verified by the WASM client);
+> single-machine simulation; PQ crates unaudited.
 
 ---
 
@@ -303,14 +304,16 @@ uses an unkeyed string tag
   leaf index enables forgery — catastrophic for a multi-signer append-only log. Statelessness
   costs signature size (7856 bytes for SHA2-128s) but eliminates that class of operational
   failure (ADR-003, `DECISIONS.md:36-41`).
-- **Verifier hardening — partly closed in M5.** *Closed:* a `QuoteVerifier` step now checks the
-  quote against a (mocked) hardware root; `kem_pubkey`/`kem_ciphertext` are length-pinned; the
-  `m=0` consistency edge now checks the empty-tree root. *Still open:* `verify_receipt` does not
-  itself use `kem_ciphertext` (the HNDL guarantee is enforced at decapsulation, one layer up);
-  the anchor set keys on root, not `(tree_size, root)`; there is no replay/used-nonce state; and
-  the shipped **WASM verifier checks the quote + STH + inclusion but still trusts a single
-  supplied `trusted_root`** rather than verifying a witness quorum (`CosignedSth`) itself —
-  wiring the quorum into the WASM client is the top follow-up.
+- **Verifier hardening — largely closed across M5/M6.** *Closed:* a `QuoteVerifier` step checks
+  the quote against a (mocked) hardware root; `kem_pubkey`/`kem_ciphertext` are length-pinned; the
+  `m=0` consistency edge checks the empty-tree root; the anchor keys on `(tree_size, root)` and
+  the client detects same-size equivocation; and the shipped **WASM verifier now verifies the
+  witness quorum itself** — `verify_receipt_full` ingests a `CosignedSth` against client-pinned
+  witness keys + threshold, rather than trusting a supplied root. *Still open:* `verify_receipt`
+  does not itself use `kem_ciphertext` (HNDL is enforced at decapsulation, one layer up); there is
+  no replay/used-nonce state; STHs carry no timestamp (an omission/freshness attack — a stale but
+  validly-signed STH can be replayed); and the witness set + hardware-root key are pinned out of
+  band, so that distribution channel is an assumed-authentic trust input.
 
 ---
 

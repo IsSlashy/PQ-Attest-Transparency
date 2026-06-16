@@ -88,8 +88,12 @@ sh scripts/build-web-demo.sh            # emits a sample receipt + builds web/pk
 cd web && python3 -m http.server 8080   # (or `python`) then open http://localhost:8080
 ```
 
-The honest receipt verifies ✅; the "Tamper" button flips one byte of the SLH-DSA
-signature and it fails ❌. Headless proof (no browser):
+The browser checks the quote signature, the STH signature, Merkle inclusion, **and that a
+threshold of a pinned witness set cosigned the STH** — it verifies the quorum *mechanism* itself,
+not a supplied root. (In this demo the witness keys are bundled in the sample for convenience; a
+real client MUST pin them out of band, independent of the receipt source.) The honest receipt
+verifies ✅; "Tamper" (flip a signature byte) and "Drop witness cosignatures" (below quorum) both
+fail ❌. Headless proof (no browser):
 
 ```bash
 wasm-pack build crates/pqtl-wasm --target nodejs --dev --out-dir pkg-node

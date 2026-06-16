@@ -36,9 +36,16 @@
   <div class="card">
     <button id="verify">Verify the honest receipt</button>
     <button id="tamper">Tamper (flip 1 byte of the STH signature)</button>
+    <button id="dropwitness">Drop witness cosignatures (below quorum)</button>
     <p style="opacity:.7;margin-bottom:0">
-      The honest receipt verifies ✅. Tampering with any field — here a single byte of
-      the SLH-DSA signature — makes it fail ❌, because the signature no longer matches.
+      The honest receipt verifies ✅ — the browser checks the quote signature, the STH
+      signature, Merkle inclusion, AND that a threshold of a pinned witness set cosigned the
+      STH. Flipping one signature byte ❌ (signature mismatch); dropping cosignatures below the
+      threshold ❌ (quorum not reached). The browser verifies the quorum <em>mechanism</em>
+      honestly — but note: in THIS demo the witness keys are bundled into
+      <code>sample-receipt.json</code> by the provider's <code>emit</code> tool for convenience.
+      A real client MUST pin the witness set out of band, independent of the receipt source, or
+      the anti-split-view property collapses.
     </p>
   </div>
 
@@ -48,13 +55,15 @@
       The receipt proves <strong>non-equivocation</strong> (the build is in a public,
       append-only log) and <strong>HNDL-safe binding</strong> (X25519+ML-KEM-768). It does
       <em>not</em> prove the build is honest — only that it cannot be served to you in
-      secret. The <code>trusted_root</code> here stands in for a root obtained from
-      independent witnesses (milestone M4) or an on-chain anchor.
+      secret. This page verifies the <strong>witness quorum</strong> itself — a threshold of the
+      client-pinned witness keys must have cosigned the STH. The hardware-root and witness public
+      keys are still pinned out of band; that distribution channel is the remaining trust
+      assumption (see <code>THREAT-MODEL.md</code>).
     </p>
   </details>
 
 <script type="module">
-  import init, { verify_receipt_json } from './pkg/pqtl_wasm.js';
+  import init, { verify_receipt_full } from './pkg/pqtl_wasm.js';
 
   const verdictEl = document.getElementById('verdict');
   const reasonEl = document.getElementById('reason');
@@ -68,13 +77,15 @@
     reasonEl.textContent = r.reason;
   }
 
-  function run(receiptObj) {
-    const out = verify_receipt_json(
+  function run(receiptObj, cosignedObj = bundle.cosigned_sth) {
+    const out = verify_receipt_full(
       JSON.stringify(receiptObj),
       bundle.expected_nonce_hex,
       bundle.sth_pubkey_hex,
       bundle.hardware_root_pubkey_hex,
-      bundle.trusted_root_hex,
+      JSON.stringify(cosignedObj),
+      JSON.stringify(bundle.witnesses),
+      bundle.threshold,
     );
     show(out);
   }
@@ -85,6 +96,12 @@
     const t = structuredClone(bundle.receipt);
     t.sth.signature[0] = t.sth.signature[0] ^ 1; // flip one bit
     run(t);
+  };
+
+  document.getElementById('dropwitness').onclick = () => {
+    const c = structuredClone(bundle.cosigned_sth);
+    c.cosignatures = c.cosignatures.slice(0, 1); // 1 cosignature < threshold 2
+    run(bundle.receipt, c);
   };
 
   (async () => {
