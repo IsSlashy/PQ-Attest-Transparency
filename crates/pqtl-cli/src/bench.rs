@@ -121,7 +121,8 @@ fn main() {
     let sth = log.signed_tree_head(&signer);
     let nonce = Nonce(sha256(&[b"nonce"]));
     let (rct, _) = kem::encapsulate(&pk.0).unwrap();
-    let qp = MockQuoteProvider;
+    let qp = MockQuoteProvider::generate();
+    let qv = qp.verifier();
     let receipt = Receipt {
         quote: qp.quote(&nonce, &pk, &honest),
         nonce: nonce.clone(),
@@ -137,6 +138,7 @@ fn main() {
             verify_receipt(
                 black_box(&receipt),
                 black_box(&nonce),
+                black_box(&qv),
                 black_box(&verifier),
                 black_box(&anchor),
             )

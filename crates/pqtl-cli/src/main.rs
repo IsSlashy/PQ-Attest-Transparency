@@ -56,7 +56,8 @@ fn main() {
     let mut log = TransparencyLog::new();
     let signer = SlhSigner::generate().expect("SLH-DSA keygen");
     let verifier = signer.verifier(); // what the client holds — public key only
-    let qp = MockQuoteProvider;
+    let qp = MockQuoteProvider::generate(); // a MOCKED hardware root (signs quotes)
+    let qv = qp.verifier(); // the client pins the hardware-root public key out of band
     let mut anchor = LocalAnchor::default();
 
     // An honest loader build, published to the public log.
@@ -87,8 +88,8 @@ fn main() {
                 "[keyserver] mesure présente → clé encapsulée (X-Wing, ct {} o), reçu émis.\n            ",
                 receipt.kem_ciphertext.len()
             );
-            match verify_receipt(&receipt, &nonce, &verifier, &anchor) {
-                Ok(()) => println!("[client] reçu vérifié (binding+inclusion+STH+anchor) → ✅ ACCEPTÉ"),
+            match verify_receipt(&receipt, &nonce, &qv, &verifier, &anchor) {
+                Ok(()) => println!("[client] reçu vérifié (quote+binding+inclusion+STH+anchor) → ✅ ACCEPTÉ"),
                 Err(e) => println!("[client] ❌ refus inattendu : {e:?}"),
             }
             // Establish the HNDL-safe session key by decapsulating; confirm it matches.
@@ -121,14 +122,14 @@ fn main() {
         quote: qp.quote(&nonce, &kem, &ghost),
         nonce: nonce.clone(),
         kem_pubkey: kem.clone(),
-        kem_ciphertext: Vec::new(),
+        kem_ciphertext: encapsulate(&kem.0).unwrap().0,
         inclusion: log.inclusion_proof(idx).unwrap(), // proof for the HONEST leaf
         sth: log.signed_tree_head(&signer),
     };
     print!("[keyserver compromis] forge un reçu pour le build fantôme.\n            ");
-    match verify_receipt(&forged, &nonce, &verifier, &anchor) {
+    match verify_receipt(&forged, &nonce, &qv, &verifier, &anchor) {
         Ok(()) => println!("[client] ⚠️  accepté à tort — BUG"),
-        Err(e) => println!("[client] reçu rejeté ({e:?}) → ❌ ATTAQUE DÉTECTÉE"),
+        Err(e) => println!("[client] reçu rejeté ({e:?}) → ❌ REÇU FORGÉ REJETÉ (preuve d'inclusion invalide)"),
     }
 
     // ---------------- Scenario 3: history cannot be rewritten ----------------

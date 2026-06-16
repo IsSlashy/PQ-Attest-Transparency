@@ -21,6 +21,7 @@ pub type Hash = [u8; 32];
 /// (Protocol-01's TS binding omitted these; we add them from the start.)
 const DOMAIN_REPORT: &[u8] = b"pqtl:attest:report-v1";
 const DOMAIN_STH: &[u8] = b"pqtl:sth-v1";
+const DOMAIN_QUOTE: &[u8] = b"pqtl:quote-v1";
 const DOMAIN_LEAF: &[u8] = &[0x00];
 const DOMAIN_NODE: &[u8] = &[0x01];
 
@@ -62,6 +63,13 @@ pub struct KemPublicKey(pub Vec<u8>);
 pub struct Quote {
     pub measurement: Measurement,
     pub report_data: Hash,
+    /// The hardware root's signature over (measurement ‖ report_data). In a real
+    /// deployment this is the TDX/TPM quote signature chaining to a manufacturer key; here
+    /// it is signed by a MOCKED hardware root ([`MockQuoteProvider`]). A verifier holding
+    /// the trusted root public key checks it via [`QuoteVerifier`] — WITHOUT this check the
+    /// binding alone is tautological (a software provider can bind any measurement). See
+    /// THREAT-MODEL.md §3.
+    pub hardware_sig: Vec<u8>,
 }
 
 /// Signed Tree Head: the log operator's commitment to its history at a size.
@@ -128,6 +136,15 @@ pub fn compute_report_data(nonce: &Nonce, kem: &KemPublicKey, m: &Measurement) -
     sha256(&[DOMAIN_REPORT, &nonce.0, &kem.0, &m.0])
 }
 
+/// Canonical bytes the hardware root signs in a quote: it attests `(measurement, report_data)`.
+pub fn quote_signing_bytes(measurement: &Measurement, report_data: &Hash) -> Vec<u8> {
+    let mut v = Vec::with_capacity(DOMAIN_QUOTE.len() + 32 + 32);
+    v.extend_from_slice(DOMAIN_QUOTE);
+    v.extend_from_slice(&measurement.0);
+    v.extend_from_slice(report_data);
+    v
+}
+
 /// Canonical bytes an STH commits to when signed.
 pub fn sth_signing_bytes(tree_size: u64, root: &Hash) -> Vec<u8> {
     let mut v = Vec::with_capacity(DOMAIN_STH.len() + 8 + 32);
@@ -158,6 +175,14 @@ pub trait QuoteProvider {
     fn quote(&self, nonce: &Nonce, kem_pubkey: &KemPublicKey, measurement: &Measurement) -> Quote;
 }
 
+/// Verifies that an attestation quote was signed by the trusted hardware root. M0:
+/// [`MockHardwareRoot`]. Real path: verify the TDX/TPM quote signature against a manufacturer
+/// cert chain. This is RNG-free (wasm-ok). WITHOUT this check, `verify_receipt`'s binding step
+/// is tautological — a software quote provider can bind any measurement (THREAT-MODEL.md §3).
+pub trait QuoteVerifier {
+    fn verify_quote(&self, quote: &Quote) -> bool;
+}
+
 /// Verifies a Signed Tree Head signature — the ONLY capability the client needs,
 /// since it holds just the log operator's public key. M0: [`PlaceholderSigner`];
 /// M1: [`slh::SlhVerifier`] (SLH-DSA / FIPS 205). Verification needs no RNG, so a
@@ -184,14 +209,64 @@ pub trait Anchor {
 // M0 placeholder implementations
 // ----------------------------------------------------------------------------
 
-/// Stand-in for a real TDX/TPM quote: just computes the binding honestly.
-pub struct MockQuoteProvider;
+/// Stand-in for a TDX/TPM quote provider. Holds a MOCKED hardware-root signing key and signs
+/// each quote with it, modeling a hardware root that a (compromised) software provider does not
+/// control. Requires the `rng` feature. The honest binding is computed; the signature is what
+/// a real attacker cannot forge without the hardware key.
+#[cfg(feature = "rng")]
+pub struct MockQuoteProvider {
+    root: slh::SlhSigner,
+}
+
+#[cfg(feature = "rng")]
+impl MockQuoteProvider {
+    pub fn generate() -> Self {
+        Self {
+            root: slh::SlhSigner::generate().expect("hardware-root keygen"),
+        }
+    }
+    /// The trusted hardware-root public key the client pins out of band (like a TPM EK cert).
+    pub fn hardware_root_pubkey(&self) -> Vec<u8> {
+        self.root.public_key_bytes()
+    }
+    /// The matching verifier the client uses to check quotes.
+    pub fn verifier(&self) -> MockHardwareRoot {
+        MockHardwareRoot::from_bytes(&self.hardware_root_pubkey()).expect("own root pk is valid")
+    }
+}
+
+#[cfg(feature = "rng")]
 impl QuoteProvider for MockQuoteProvider {
     fn quote(&self, nonce: &Nonce, kem: &KemPublicKey, m: &Measurement) -> Quote {
+        let report_data = compute_report_data(nonce, kem, m);
+        let hardware_sig = self.root.sign(&quote_signing_bytes(m, &report_data));
         Quote {
             measurement: m.clone(),
-            report_data: compute_report_data(nonce, kem, m),
+            report_data,
+            hardware_sig,
         }
+    }
+}
+
+/// Client-side verifier of a mocked hardware-root quote signature (SLH-DSA). RNG-free → wasm-ok.
+pub struct MockHardwareRoot {
+    root_pk: slh::SlhVerifier,
+}
+
+impl MockHardwareRoot {
+    pub fn from_bytes(pubkey: &[u8]) -> Result<Self, &'static str> {
+        Ok(Self {
+            root_pk: slh::SlhVerifier::from_bytes(pubkey)?,
+        })
+    }
+}
+
+impl QuoteVerifier for MockHardwareRoot {
+    fn verify_quote(&self, quote: &Quote) -> bool {
+        self.root_pk.verify(
+            &quote_signing_bytes(&quote.measurement, &quote.report_data),
+            &quote.hardware_sig,
+        )
     }
 }
 
@@ -782,8 +857,9 @@ pub mod log {
             return path.is_empty() && first_root == second_root;
         }
         if m == 0 {
-            // every tree is consistent with the empty tree
-            return path.is_empty();
+            // every tree is consistent with the empty tree — but only if first_root really IS
+            // the empty-tree root (do not accept an arbitrary claimed root).
+            return path.is_empty() && *first_root == mth(&[]);
         }
         // 0 < m < n
         let inner0 = bit_len((m - 1) ^ (n - 1));
@@ -828,8 +904,12 @@ pub mod verify {
 
     #[derive(Debug, PartialEq, Eq)]
     pub enum VerifyError {
+        /// The attestation quote is not signed by the trusted hardware root.
+        QuoteSignatureInvalid,
         /// report_data does not bind our nonce, the kem key and the measurement.
         BindingMismatch,
+        /// kem_pubkey / kem_ciphertext have the wrong length.
+        MalformedKem,
         /// The STH signature does not verify.
         SthSignatureInvalid,
         /// The attested measurement is not proven to be in the signed root.
@@ -842,13 +922,27 @@ pub mod verify {
     pub fn verify_receipt(
         r: &Receipt,
         expected_nonce: &Nonce,
+        quote_verifier: &dyn QuoteVerifier,
         verifier: &dyn SthVerifier,
         anchor: &dyn Anchor,
     ) -> Result<(), VerifyError> {
+        // 0. The quote must be signed by the TRUSTED hardware root. Without this the binding
+        //    check below is tautological — a software provider can bind any measurement.
+        if !quote_verifier.verify_quote(&r.quote) {
+            return Err(VerifyError::QuoteSignatureInvalid);
+        }
         // 1. Binding: the quote must commit to OUR nonce, this kem key, this measurement.
         let expected = compute_report_data(expected_nonce, &r.kem_pubkey, &r.quote.measurement);
         if r.nonce != *expected_nonce || r.quote.report_data != expected {
             return Err(VerifyError::BindingMismatch);
+        }
+        // 1b. Length-pin the KEM fields. NOTE: a sound HNDL session ALSO requires the client to
+        //     actually decapsulate r.kem_ciphertext and derive the session key — that happens at
+        //     the application layer, not here (see THREAT-MODEL.md §4.3).
+        if r.kem_pubkey.0.len() != kem::PUBLIC_KEY_LEN
+            || r.kem_ciphertext.len() != kem::CIPHERTEXT_LEN
+        {
+            return Err(VerifyError::MalformedKem);
         }
         // 2. The log operator really signed this (size, root) — checked with the public key only.
         let bytes = sth_signing_bytes(r.sth.tree_size, &r.sth.root);
@@ -912,7 +1006,8 @@ mod tests {
     fn full_receipt_roundtrip_and_attack() {
         let mut log = TransparencyLog::new();
         let signer = PlaceholderSigner::new(b"op");
-        let qp = MockQuoteProvider;
+        let qp = MockQuoteProvider::generate();
+        let qv = qp.verifier();
         let mut anchor = LocalAnchor::default();
 
         let honest = m("honest");
@@ -921,17 +1016,19 @@ mod tests {
         anchor.anchor(&sth);
 
         let nonce = Nonce(sha256(&[b"n1"]));
-        let kem = KemPublicKey(b"pk".to_vec());
+        let client = super::kem::ClientKeypair::generate();
+        let kem = client.public_key();
+        let (ct, _) = super::kem::encapsulate(&kem.0).unwrap();
 
         let good = Receipt {
             quote: qp.quote(&nonce, &kem, &honest),
             nonce: nonce.clone(),
             kem_pubkey: kem.clone(),
-            kem_ciphertext: Vec::new(),
+            kem_ciphertext: ct.clone(),
             inclusion: log.inclusion_proof(idx).unwrap(),
             sth: log.signed_tree_head(&signer),
         };
-        assert!(verify::verify_receipt(&good, &nonce, &signer, &anchor).is_ok());
+        assert!(verify::verify_receipt(&good, &nonce, &qv, &signer, &anchor).is_ok());
 
         // Ghost build, never logged: forge a receipt reusing the honest inclusion proof.
         let ghost = m("ghost");
@@ -939,12 +1036,12 @@ mod tests {
             quote: qp.quote(&nonce, &kem, &ghost),
             nonce: nonce.clone(),
             kem_pubkey: kem.clone(),
-            kem_ciphertext: Vec::new(),
+            kem_ciphertext: ct.clone(),
             inclusion: log.inclusion_proof(idx).unwrap(),
             sth: log.signed_tree_head(&signer),
         };
         assert_eq!(
-            verify::verify_receipt(&forged, &nonce, &signer, &anchor),
+            verify::verify_receipt(&forged, &nonce, &qv, &signer, &anchor),
             Err(verify::VerifyError::InclusionInvalid)
         );
     }
@@ -970,7 +1067,8 @@ mod tests {
         let mut log = TransparencyLog::new();
         let signer = SlhSigner::generate().unwrap();
         let verifier = signer.verifier(); // client holds only this
-        let qp = MockQuoteProvider;
+        let qp = MockQuoteProvider::generate();
+        let qv = qp.verifier();
         let mut anchor = LocalAnchor::default();
 
         let honest = m("honest");
@@ -978,16 +1076,72 @@ mod tests {
         anchor.anchor(&log.signed_tree_head(&signer));
 
         let nonce = Nonce(sha256(&[b"n"]));
-        let kem = KemPublicKey(b"pk".to_vec());
+        let client = super::kem::ClientKeypair::generate();
+        let kem = client.public_key();
+        let (ct, _) = super::kem::encapsulate(&kem.0).unwrap();
         let r = Receipt {
             quote: qp.quote(&nonce, &kem, &honest),
             nonce: nonce.clone(),
             kem_pubkey: kem.clone(),
-            kem_ciphertext: Vec::new(),
+            kem_ciphertext: ct,
             inclusion: log.inclusion_proof(idx).unwrap(),
             sth: log.signed_tree_head(&signer),
         };
-        assert!(verify::verify_receipt(&r, &nonce, &verifier, &anchor).is_ok());
+        assert!(verify::verify_receipt(&r, &nonce, &qv, &verifier, &anchor).is_ok());
+    }
+
+    #[test]
+    fn binding_is_tautological_without_a_trusted_quote() {
+        // The point of the QuoteVerifier: the binding check ALONE cannot catch a lying
+        // provider; only a hardware-root signature can. This test proves both halves.
+        let mut log = TransparencyLog::new();
+        let signer = super::slh::SlhSigner::generate().unwrap();
+        let mut anchor = LocalAnchor::default();
+
+        // The client pins the HONEST hardware root's public key out of band.
+        let honest_root = MockQuoteProvider::generate();
+        let qv = honest_root.verifier();
+
+        let nonce = Nonce(sha256(&[b"n"]));
+        let client = super::kem::ClientKeypair::generate();
+        let kem = client.public_key();
+        let (ct, _) = super::kem::encapsulate(&kem.0).unwrap();
+
+        // The attacker controls the keyserver and even LOGS a ghost build, so inclusion is
+        // valid — the ONLY thing left to stop acceptance is the quote signature.
+        let ghost = m("backdoored");
+        let gidx = log.append(&ghost);
+        let sth = log.signed_tree_head(&signer);
+        anchor.anchor(&sth);
+
+        // (a) The binding is self-consistent for ANY measurement — this is the tautology.
+        let bound = honest_root.quote(&nonce, &kem, &ghost);
+        assert_eq!(bound.report_data, compute_report_data(&nonce, &kem, &ghost));
+
+        // (b) The real attacker has a DIFFERENT hardware key; its validly-bound quote is NOT
+        //     signed by the trusted root → rejected at step 0, before inclusion even matters.
+        let attacker_root = MockQuoteProvider::generate();
+        let forged = Receipt {
+            quote: attacker_root.quote(&nonce, &kem, &ghost),
+            nonce: nonce.clone(),
+            kem_pubkey: kem.clone(),
+            kem_ciphertext: ct.clone(),
+            inclusion: log.inclusion_proof(gidx).unwrap(),
+            sth: sth.clone(),
+        };
+        assert_eq!(
+            verify::verify_receipt(&forged, &nonce, &qv, &signer.verifier(), &anchor),
+            Err(verify::VerifyError::QuoteSignatureInvalid)
+        );
+
+        // (c) With the honest root's quote the SAME receipt verifies — so the hardware-root
+        //     signature is exactly what stands between "logged ghost" and "accepted". (In the
+        //     mock the honest root will sign anything; a real TPM only signs the loaded build.)
+        let accepted = Receipt {
+            quote: honest_root.quote(&nonce, &kem, &ghost),
+            ..forged.clone()
+        };
+        assert!(verify::verify_receipt(&accepted, &nonce, &qv, &signer.verifier(), &anchor).is_ok());
     }
 
     #[test]

@@ -11,7 +11,7 @@ fn main() {
     // An honest loader build, published to the public transparency log.
     let mut log = TransparencyLog::new();
     let signer = SlhSigner::generate().expect("SLH-DSA keygen");
-    let qp = MockQuoteProvider;
+    let qp = MockQuoteProvider::generate(); // mocked hardware root
     let honest = Measurement(sha256(&[b"loader-build:", b"v1.0-honest", b"<honest loader bytes>"]));
     let idx = log.append(&honest);
     let sth = log.signed_tree_head(&signer);
@@ -35,6 +35,7 @@ fn main() {
         "receipt": receipt,
         "expected_nonce_hex": hex::encode(nonce.0),
         "sth_pubkey_hex": hex::encode(signer.public_key_bytes()),
+        "hardware_root_pubkey_hex": hex::encode(qp.hardware_root_pubkey()),
         "trusted_root_hex": hex::encode(sth.root),
     });
 

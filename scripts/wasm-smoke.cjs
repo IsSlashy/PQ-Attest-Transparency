@@ -8,7 +8,8 @@ const { verify_receipt_json } = require('../crates/pqtl-wasm/pkg-node/pqtl_wasm.
 
 const b = JSON.parse(fs.readFileSync('web/sample-receipt.json', 'utf8'));
 const verify = (receipt, root = b.trusted_root_hex) =>
-  JSON.parse(verify_receipt_json(JSON.stringify(receipt), b.expected_nonce_hex, b.sth_pubkey_hex, root));
+  JSON.parse(verify_receipt_json(
+    JSON.stringify(receipt), b.expected_nonce_hex, b.sth_pubkey_hex, b.hardware_root_pubkey_hex, root));
 
 const honest = verify(b.receipt);
 

@@ -98,14 +98,18 @@ Two consequences follow, and a skeptic is right to lead with them:
    scenarios 2 and 3 are therefore guaranteed by construction against a software provider, not
    earned by exercising a real attestation path.
 
-2. **The binding check in the verifier is tautological against a software quote.**
-   `verify_receipt` step 1 (`lib.rs:850-854`) re-derives the expected `report_data` from the
-   receipt's own `nonce`, `kem_pubkey`, and `measurement`, using the same `compute_report_data`
-   the mock used to produce it. It will reject an attacker who *forgets* to recompute the hash,
-   but it has no independent oracle for whether the bound measurement is the one the hardware
-   actually loaded. The binding check only becomes meaningful when a real, hardware-signed quote
-   replaces the mock and the verifier additionally checks the hardware signature over
-   `report_data` — which this artifact does not do.
+2. **The binding check alone is tautological — which is why the verifier now checks a
+   hardware-root signature.** `verify_receipt`'s binding step re-derives the expected
+   `report_data` from the receipt's own `nonce`, `kem_pubkey`, and `measurement`, so on its own
+   it only rejects an attacker who *forgets* to recompute the hash. To stop that, **step 0**
+   (`QuoteVerifier::verify_quote`) checks a signature over `(measurement, report_data)` by a
+   trusted hardware root, and the test `binding_is_tautological_without_a_trusted_quote` proves
+   that a *logged* ghost build with a perfectly correct binding is still rejected
+   (`QuoteSignatureInvalid`) unless the quote is signed by the pinned root. **The residual
+   honesty gap is the mock itself:** `MockQuoteProvider`'s hardware root will sign *any*
+   measurement, whereas a real TPM/TDX signs only the build it actually loaded. So the boundary
+   and its dependency are now explicit and tested — but the mock cannot model the one thing a
+   real hardware root provides: attestation that the bound measurement is the running one.
 
 The classical hardware root is **explicitly out of scope** (`DECISIONS.md:98`,
 `RESEARCH.md:52-57`): a deployed TPM/TDX quote is signed in RSA/ECC, fixed in silicon, and
@@ -180,18 +184,16 @@ keyserver encapsulates against it (`encapsulate`, `lib.rs:403`); the client deca
 (`derive_session_key`, `lib.rs:411-423`). A tampered ciphertext yields a divergent secret
 (ML-KEM implicit rejection), so the channel fails closed (test at `lib.rs:1061-1066`).
 
-**Does NOT guarantee — and a real gap in the verifier.** `verify_receipt` does **not validate
-`kem_ciphertext` at all** (`lib.rs:844-869`): the ciphertext is not committed into `report_data`,
-its length is not checked, and `derive_session_key` is never invoked on the verify path. A
-receipt carrying a garbage (or empty) `kem_ciphertext` still verifies `Ok` — indeed the demo's
-forged receipt and several tests pass `kem_ciphertext: Vec::new()` (`main.rs:124`,
-`lib.rs:932`). The verifier likewise never checks that `kem_pubkey` has length
-`PUBLIC_KEY_LEN` (`lib.rs:851`, the binding is hashed but unvalidated for length). Closing this
-requires either committing the ciphertext into `report_data` or length-checking both
-`kem_pubkey` and `kem_ciphertext` in `verify_receipt`. Until then, "the receipt verified" does
-**not** mean "a sound HNDL-safe session key was established" — only that the binding hash and
-the log proofs are consistent. The HNDL property is real for the *channel* exercised in
-`main.rs` / tests, but is not enforced by the client receipt check.
+**Does NOT guarantee.** `verify_receipt` now **length-pins** `kem_pubkey` and `kem_ciphertext`
+(returning `MalformedKem` otherwise), but it still does not *use* the ciphertext. It is not
+committed into `report_data` (it cannot be — `report_data` is produced by the quote *before* the
+keyserver replies with a ciphertext), and `derive_session_key` is not invoked on the verify
+path. So a correctly-sized but wrong ciphertext would pass `verify_receipt`; the actual HNDL
+guarantee is enforced one layer up, when the client **decapsulates** `kem_ciphertext` and derives
+the session key — a swapped ciphertext yields a different key (ML-KEM implicit rejection). "The
+receipt verified" therefore means the quote, binding, and log proofs are consistent and the KEM
+fields are well-formed, **not** that a sound session key was established — that is the
+application layer's job. The HNDL property is real for the channel exercised in `main.rs` / tests.
 
 There is also no replay/freshness state: freshness is the caller's duty (the verifier checks
 the receipt's nonce equals an expected nonce, `lib.rs:852`, but holds no used-nonce set), and
@@ -237,11 +239,10 @@ append-only is enforced both at verification time and at anchoring time.
 **Does NOT guarantee.** The log is **not incremental** — it rebuilds the tree from stored leaf
 hashes on every query, O(n) per proof rather than O(log n) (`lib.rs:557-562`,
 `mth`/`path`/`root` at `lib.rs:582`, `:594`, `:695`). This is a performance limitation, not a
-soundness one. One soundness-adjacent edge: `verify_consistency` for `first_size == 0` returns
-on an empty path **without checking either root** (`lib.rs:786-789`), accepting arbitrary roots
-as "consistent with the empty tree." It is a `pub fn` and currently unreachable (the prover
-rejects `first_size == 0` at `lib.rs:727`), but a defensive fix would also require `first_root`
-to equal the empty-tree root. Separately, the empty-tree sentinel uses an unkeyed string tag
+soundness one. One soundness-adjacent edge has been closed: `verify_consistency` for `first_size == 0` now
+requires `first_root` to equal the empty-tree root (`mth(&[])`), rather than accepting an
+arbitrary claimed root as "consistent with the empty tree." Separately, the empty-tree sentinel
+uses an unkeyed string tag
 (`b"pqtl:empty-tree"`, `lib.rs:584`); string tags start at `0x70` and are disjoint from the
 `0x00`/`0x01` leaf/node domain separators, so there is no collision — cosmetic only.
 
@@ -302,10 +303,14 @@ to equal the empty-tree root. Separately, the empty-tree sentinel uses an unkeye
   leaf index enables forgery — catastrophic for a multi-signer append-only log. Statelessness
   costs signature size (7856 bytes for SHA2-128s) but eliminates that class of operational
   failure (ADR-003, `DECISIONS.md:36-41`).
-- **Verifier gaps enumerated in §4.** `kem_ciphertext` is unvalidated by `verify_receipt`; no
-  length pinning on `kem_pubkey`/`kem_ciphertext`; the anchor set ignores `tree_size`; no replay
-  state; the `m=0` consistency edge accepts arbitrary roots (unreachable today). None breaks the
-  demonstrated scenarios, but each is a real hardening item before any production claim.
+- **Verifier hardening — partly closed in M5.** *Closed:* a `QuoteVerifier` step now checks the
+  quote against a (mocked) hardware root; `kem_pubkey`/`kem_ciphertext` are length-pinned; the
+  `m=0` consistency edge now checks the empty-tree root. *Still open:* `verify_receipt` does not
+  itself use `kem_ciphertext` (the HNDL guarantee is enforced at decapsulation, one layer up);
+  the anchor set keys on root, not `(tree_size, root)`; there is no replay/used-nonce state; and
+  the shipped **WASM verifier checks the quote + STH + inclusion but still trusts a single
+  supplied `trusted_root`** rather than verifying a witness quorum (`CosignedSth`) itself —
+  wiring the quorum into the WASM client is the top follow-up.
 
 ---
 
@@ -317,11 +322,11 @@ to equal the empty-tree root. Separately, the empty-tree sentinel uses an unkeye
 | RFC 6962 consistency / append-only | **Proven** | Real code + rewrite test (`lib.rs:772`, `:1025`); `m=0` edge and O(n) rebuild are caveats. |
 | STH signing (SLH-DSA / FIPS 205) | **Proven** | Real `fips205` crate, sign/verify roundtrip (`lib.rs:242`, `:955`). Crate **unaudited**. |
 | X-Wing session key agreement (HNDL) | **Proven (channel)** | Real `x-wing` crate; both sides agree, fails closed (`lib.rs:329`, `:1045`). Crate **unaudited**. |
-| Receipt validates the KEM ciphertext | **NOT done** | `verify_receipt` ignores `kem_ciphertext`; garbage still verifies `Ok` (`lib.rs:844-869`). |
+| Receipt validates the KEM fields | **Length-pinned** | `verify_receipt` checks `kem_pubkey`/`kem_ciphertext` lengths; the ciphertext is *used* at decapsulation, not in `verify_receipt`. |
 | Witness quorum / anti-split-view logic | **Proven (mechanism)** | Real cosign + threshold + fork refusal (`lib.rs:430`). |
 | Non-equivocation against a fork | **Proven (mechanism)** | Holds given honest witnesses and the anchor check (`lib.rs:864-867`). |
 | Hardware attestation quote / root of trust | **Mocked** | `MockQuoteProvider` computes the binding honestly; no real quote, cannot equivocate (`lib.rs:191`). |
-| Binding check in `verify_receipt` | **Tautological vs mock** | Re-derives `report_data` from receipt fields; meaningful only with a real signed quote (`lib.rs:850`). |
+| Quote hardware-root signature | **Checked (mocked root)** | Step 0 verifies the quote signature; the binding alone is tautological — proven by `binding_is_tautological_without_a_trusted_quote`. The mock root can sign any measurement (cannot model a real TPM). |
 | Real witness / gossip network | **Mocked** | In-process witnesses; no operators, no transport (`main.rs:166`). |
 | Reproducible builds (provenance) | **Assumed / documented** | The precondition that makes tamper-evidence bite; not built (ADR-006). |
 | Independent, honest witness quorum | **Assumed** | Collusion ≥ threshold breaks anti-split-view (§4.4). |
