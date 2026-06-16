@@ -511,10 +511,29 @@ pub mod witness {
     use super::log::verify_consistency;
     use super::slh::SlhVerifier;
     use super::{
-        cosignature_bytes, Anchor, ConsistencyProof, CosignedSth, Hash, SignedTreeHead,
+        cosignature_bytes, sha256, Anchor, ConsistencyProof, CosignedSth, Hash, SignedTreeHead,
         SthVerifier, WitnessCosignature,
     };
     use std::collections::{HashMap, HashSet};
+
+    /// A canonical, order-independent commitment to a witness set `[(id, pubkey)]` AND its quorum
+    /// `threshold`. Domain-separated and length-prefixed so the encoding is unambiguous. Binding the
+    /// threshold means a provider can't weaken the quorum (e.g. drop it to 1) either. The operator
+    /// anchors this on-chain; a client recomputes it from a provider-supplied set+threshold and
+    /// rejects any mismatch — so a substituted set OR a weakened threshold is detected (M8).
+    pub fn witness_set_commitment(set: &[(u32, Vec<u8>)], threshold: usize) -> Hash {
+        let mut sorted: Vec<&(u32, Vec<u8>)> = set.iter().collect();
+        sorted.sort_by_key(|(id, _)| *id);
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"pqtl:witness-set-v1");
+        buf.extend_from_slice(&(threshold as u32).to_be_bytes()); // bind the quorum policy too
+        for (id, pk) in sorted {
+            buf.extend_from_slice(&id.to_be_bytes());
+            buf.extend_from_slice(&(pk.len() as u32).to_be_bytes());
+            buf.extend_from_slice(pk);
+        }
+        sha256(&[&buf])
+    }
 
     /// A witness: holds its own signing key and the last STH it attested to.
     /// Requires the `rng` feature (keygen + signing).
@@ -589,6 +608,35 @@ pub mod witness {
                 accepted: HashSet::new(),
                 by_size: HashMap::new(),
             }
+        }
+
+        /// Like `new`, but only if the witness set + threshold match `expected_commitment` — which
+        /// the client obtains from the CHAIN, not from the provider. Returns `None` on a duplicate
+        /// id, a mismatch, or a malformed key. This MOVES the trust root from the provider's bundle
+        /// to the on-chain commitment (the client must still authentically know the program id /
+        /// log authority it reads that commitment from); genuine-quorum collusion is unaffected.
+        /// **Passing a provider-controlled `expected_commitment` voids the guarantee** — obtain it
+        /// only via `ChainAnchor::witness_set()` / an on-chain read (M8).
+        pub fn new_checked(
+            witnesses: Vec<(u32, Vec<u8>)>,
+            threshold: usize,
+            expected_commitment: Hash,
+        ) -> Option<Self> {
+            // Reject duplicate ids so the commitment is canonical over the id set, and so the
+            // first-match semantics of `ingest` cannot silently diverge from what was committed.
+            let mut ids: Vec<u32> = witnesses.iter().map(|(id, _)| *id).collect();
+            ids.sort_unstable();
+            if ids.windows(2).any(|w| w[0] == w[1]) {
+                return None;
+            }
+            if witness_set_commitment(&witnesses, threshold) != expected_commitment {
+                return None;
+            }
+            let mut trusted = Vec::with_capacity(witnesses.len());
+            for (id, pk) in &witnesses {
+                trusted.push((*id, SlhVerifier::from_bytes(pk).ok()?));
+            }
+            Some(Self::new(trusted, threshold))
         }
 
         /// Accept a cosigned STH's root iff:
@@ -689,6 +737,12 @@ pub mod chain {
         fn submit(&mut self, epoch: u64, root: Hash) -> bool;
         /// The root committed at `epoch`, if any.
         fn read(&self, epoch: u64) -> Option<Hash>;
+        /// Commit the log's canonical witness-set commitment (immutable once set). Returns `false`
+        /// if a DIFFERENT commitment is already published. This is what lets a client trust the
+        /// witness set from the chain instead of from the (untrusted) provider. See M8.
+        fn submit_witness_set(&mut self, commitment: Hash) -> bool;
+        /// The committed witness-set commitment, if any.
+        fn read_witness_set(&self) -> Option<Hash>;
     }
 
     /// In-process stand-in for a public chain. Models the one property that matters: append-only
@@ -696,6 +750,7 @@ pub mod chain {
     #[derive(Default)]
     pub struct MockLedger {
         entries: HashMap<u64, Hash>,
+        witness_set: Option<Hash>,
     }
 
     impl MockLedger {
@@ -717,6 +772,18 @@ pub mod chain {
         fn read(&self, epoch: u64) -> Option<Hash> {
             self.entries.get(&epoch).copied()
         }
+        fn submit_witness_set(&mut self, commitment: Hash) -> bool {
+            match self.witness_set {
+                Some(existing) => existing == commitment, // idempotent if equal; reject if different
+                None => {
+                    self.witness_set = Some(commitment);
+                    true
+                }
+            }
+        }
+        fn read_witness_set(&self) -> Option<Hash> {
+            self.witness_set
+        }
     }
 
     /// Anchor backed by a public ledger. A root is trusted iff the ledger holds it at the STH's
@@ -735,6 +802,14 @@ pub mod chain {
         /// holds a different root at that epoch (equivocation rejected by the chain).
         pub fn submit(&mut self, sth: &SignedTreeHead) -> bool {
             self.ledger.submit(sth.tree_size, sth.root)
+        }
+        /// Operator side: publish the canonical witness-set commitment (immutable once set).
+        pub fn submit_witness_set(&mut self, commitment: Hash) -> bool {
+            self.ledger.submit_witness_set(commitment)
+        }
+        /// Client side: the witness-set commitment to verify a provider-supplied witness set against.
+        pub fn witness_set(&self) -> Option<Hash> {
+            self.ledger.read_witness_set()
         }
         pub fn ledger(&self) -> &L {
             &self.ledger
@@ -1478,5 +1553,44 @@ mod tests {
         assert!(!anchor.submit(&sth_b)); // equivocating publish at the same epoch → ledger rejects
         assert!(!anchor.is_anchored(&sth_b)); // the conflicting root is never trusted
         assert!(anchor.submit(&sth_a)); // idempotent re-publish of the same root is fine
+    }
+
+    #[test]
+    fn witness_set_commitment_is_order_independent_and_binding() {
+        use super::witness::witness_set_commitment;
+        let a = vec![(0u32, vec![1u8; 32]), (1u32, vec![2u8; 32])];
+        let b = vec![(1u32, vec![2u8; 32]), (0u32, vec![1u8; 32])]; // reordered
+        assert_eq!(witness_set_commitment(&a, 2), witness_set_commitment(&b, 2));
+        let c = vec![(0u32, vec![9u8; 32]), (1u32, vec![2u8; 32])]; // one key changed
+        assert_ne!(witness_set_commitment(&a, 2), witness_set_commitment(&c, 2));
+        // the threshold is bound too — weakening the quorum changes the commitment
+        assert_ne!(witness_set_commitment(&a, 2), witness_set_commitment(&a, 1));
+    }
+
+    #[test]
+    fn on_chain_pinned_witness_set_rejects_substitution() {
+        use super::chain::{ChainAnchor, MockLedger};
+        use super::slh::SlhSigner;
+        use super::witness::{witness_set_commitment, WitnessAnchor};
+
+        let w0 = SlhSigner::generate().unwrap();
+        let w1 = SlhSigner::generate().unwrap();
+        let genuine = vec![(0u32, w0.public_key_bytes()), (1u32, w1.public_key_bytes())];
+
+        // Operator anchors the genuine commitment on-chain (immutable).
+        let mut chain = ChainAnchor::new(MockLedger::new());
+        assert!(chain.submit_witness_set(witness_set_commitment(&genuine, 2)));
+        let pinned = chain.witness_set().unwrap(); // the client reads it FROM the chain
+
+        // Genuine set matches the pinned commitment -> Some.
+        assert!(WitnessAnchor::new_checked(genuine.clone(), 2, pinned).is_some());
+
+        // A provider substitutes witness 0 with its own key -> mismatch -> None.
+        let evil = SlhSigner::generate().unwrap();
+        let substituted = vec![(0u32, evil.public_key_bytes()), (1u32, w1.public_key_bytes())];
+        assert!(WitnessAnchor::new_checked(substituted, 2, pinned).is_none());
+
+        // The on-chain commitment is immutable: a second, different one is rejected.
+        assert!(!chain.submit_witness_set([0u8; 32]));
     }
 }

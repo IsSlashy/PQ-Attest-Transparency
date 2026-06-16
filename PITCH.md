@@ -44,7 +44,7 @@ and hands the end user a **receipt they verify themselves** (in the browser).
 - **A client verifier compiled to WebAssembly** — verify a receipt in the browser, no server, no
   randomness; it checks the quote signature (against a *mocked* hardware root — see limits), the
   STH signature, Merkle inclusion, and a witness quorum.
-- **Reproducible** — `cargo test` (13), `cargo run -p pqtl-cli --bin pqtl-demo` (6 scenarios), and
+- **Reproducible** — `cargo test` (15), `cargo run -p pqtl-cli --bin pqtl-demo` (7 scenarios), and
   a browser demo, all on a stock Rust toolchain; the on-chain piece is verified separately with
   `anchor test` (WSL + a Solana/Anchor toolchain).
 
@@ -52,8 +52,10 @@ and hands the end user a **receipt they verify themselves** (in the browser).
 
 A **reference MVP, not production.** The PQ crates (`fips205`, `x-wing`, `ml-kem`) are maintained
 and NIST-vector-tested but **independently unaudited**; the hardware attestation quote is **mocked**
-(no real TPM root); witness-key distribution and reproducible builds are **assumed**. Every one of
-these is stated, with mechanisms and residual risks, in [`THREAT-MODEL.md`](./THREAT-MODEL.md).
+(no real TPM root); reproducible builds are **assumed**; and witness-key distribution is hardened
+(an on-chain commitment stops a provider substituting its own witness keys) but still rests on the
+client reading that commitment from the right chain/program. Every one of these is stated, with
+mechanisms and residual risks, in [`THREAT-MODEL.md`](./THREAT-MODEL.md).
 
 ---
 
@@ -80,7 +82,7 @@ epoch is rejected by the chain).
 logged hash is opaque; transparency makes a hidden backdoor undeniable *after* it's found, not
 detectable up front. Crates are unaudited; the TPM root is mocked. All written down.
 
-6/ Reproducible: `cargo test`, a CLI demo of six attack/defence scenarios, and a browser verifier
+6/ Reproducible: `cargo test`, a CLI demo of seven attack/defence scenarios, and a browser verifier
 on a stock Rust toolchain; the chain piece via `anchor test` (WSL + Solana/Anchor). Verify it
 yourself in your browser: https://pq-attest-transparency.vercel.app · repo (+ threat model +
 benchmarks): https://github.com/IsSlashy/PQ-Attest-Transparency

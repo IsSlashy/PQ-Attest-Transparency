@@ -13,7 +13,7 @@ use pqtl_core::kem::{derive_session_key, encapsulate, ClientKeypair};
 use pqtl_core::log::{verify_consistency, TransparencyLog};
 use pqtl_core::slh::SlhSigner;
 use pqtl_core::verify::verify_receipt;
-use pqtl_core::witness::{Witness, WitnessAnchor};
+use pqtl_core::witness::{witness_set_commitment, Witness, WitnessAnchor};
 use pqtl_core::*;
 
 fn measurement_of(label: &str, build: &[u8]) -> Measurement {
@@ -276,6 +276,30 @@ fn main() {
         Err(e) => println!("[client] {e:?} (inattendu)"),
     }
 
+    // ---------------- Scenario 7: on-chain witness-set pinning ----------------
+    println!("\n--- Scénario 7 : pinning des témoins on-chain (le client ne fait plus confiance au bundle du provider) ---");
+    let wits: Vec<Witness> = (0..3).map(Witness::generate).collect();
+    let genuine_keys: Vec<(u32, Vec<u8>)> =
+        wits.iter().map(|w| (w.id(), w.public_key_bytes())).collect();
+    let mut wchain = ChainAnchor::new(MockLedger::new());
+    wchain.submit_witness_set(witness_set_commitment(&genuine_keys, 2)); // operator anchors it on-chain
+    let pinned = wchain.witness_set().unwrap(); // the client reads the commitment FROM the chain
+    println!("[opérateur] commitment du set de témoins ancré on-chain (immuable).");
+    // An attacker bundles a FORGED witness set (its own keys) with the receipt.
+    let evil_wits: Vec<Witness> = (0..3).map(Witness::generate).collect();
+    let forged_keys: Vec<(u32, Vec<u8>)> =
+        evil_wits.iter().map(|w| (w.id(), w.public_key_bytes())).collect();
+    print!("[client] le provider fournit un set de témoins → vérifié contre l'ancre on-chain : ");
+    match WitnessAnchor::new_checked(forged_keys, 2, pinned) {
+        Some(_) => println!("⚠️  accepté — BUG"),
+        None => println!("set FORGÉ (commitment ≠ chaîne) → ❌ REJETÉ"),
+    }
+    print!("[client] avec le vrai set : ");
+    match WitnessAnchor::new_checked(genuine_keys, 2, pinned) {
+        Some(_) => println!("✅ accepté — clés témoins authentifiées par la CHAÎNE, pas par le provider"),
+        None => println!("❌ (BUG)"),
+    }
+
     println!(
         "\nRésumé : le client refuse un loader que l'attestation classique seule aurait accepté.\n\
          Ce que cette démo prouve : la NON-ÉQUIVOCATION (un build doit être publiquement loggé\n\
@@ -283,6 +307,7 @@ fn main() {
          un canal de session HNDL-safe (X-Wing), et l'anti-split-view par co-signature de témoins.\n\
          Et (scénario 5) : un backdoor LOGGÉ vérifie — le gain est la non-équivocation, pas le blocage.\n\
          Et (scénario 6) : ancre on-chain — un registre immuable bloque l'équivocation sans fédération de témoins.\n\
+         Et (scénario 7) : les clés témoins sont ancrées on-chain — un set forgé par le provider est rejeté.\n\
          Vérifieur compilé en WASM. Limites & residual risks : voir THREAT-MODEL.md ; coûts : BENCHMARKS.md."
     );
 }

@@ -36,6 +36,19 @@ pub mod sth_anchor {
         });
         Ok(())
     }
+
+    /// Publish the log's canonical witness-set commitment. The PDA is per `log_authority` and
+    /// created with `init`, so the witness set is immutable: a second, different commitment is
+    /// rejected. A client reads this to authenticate the witness keys from the chain instead of
+    /// from the (untrusted) provider — closing the witness-distribution gap.
+    pub fn anchor_witness_set(ctx: Context<AnchorWitnessSet>, commitment: [u8; 32]) -> Result<()> {
+        let ws = &mut ctx.accounts.witness_set;
+        ws.log_id = ctx.accounts.log_authority.key();
+        ws.commitment = commitment;
+        ws.timestamp = Clock::get()?.unix_timestamp;
+        ws.bump = ctx.bumps.witness_set;
+        Ok(())
+    }
 }
 
 #[derive(Accounts)]
@@ -70,6 +83,35 @@ pub struct SthAnchor {
 
 impl SthAnchor {
     pub const SIZE: usize = 32 + 8 + 32 + 8 + 1;
+}
+
+#[derive(Accounts)]
+pub struct AnchorWitnessSet<'info> {
+    /// One witness-set commitment per `log_authority`. `init` => creatable exactly once.
+    #[account(
+        init,
+        payer = log_authority,
+        space = 8 + WitnessSet::SIZE,
+        seeds = [b"witnessset", log_authority.key().as_ref()],
+        bump
+    )]
+    pub witness_set: Account<'info, WitnessSet>,
+    #[account(mut)]
+    pub log_authority: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[account]
+pub struct WitnessSet {
+    pub log_id: Pubkey,
+    /// Canonical commitment to the authoritative witness set (id + pubkey, domain-separated).
+    pub commitment: [u8; 32],
+    pub timestamp: i64,
+    pub bump: u8,
+}
+
+impl WitnessSet {
+    pub const SIZE: usize = 32 + 32 + 8 + 1;
 }
 
 #[event]

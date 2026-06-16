@@ -5,8 +5,9 @@
 > `RESEARCH.md` §6. The pitch rule from ADR-006 binds this whole document: *"they can no
 > longer lie in secret or rewrite history"* — never *"you will know if it is backdoored."*
 >
-> Date: 2026-06-16. Status: M0–M6 (SLH-DSA STH; RFC 6962 inclusion + consistency; X-Wing binding;
-> mocked-hardware-root quote verification; witness anti-split-view, verified by the WASM client);
+> Date: 2026-06-16. Status: M0–M8 (SLH-DSA STH; RFC 6962 inclusion + consistency; X-Wing binding;
+> mocked-hardware-root quote verification; witness anti-split-view verified by the WASM client; an
+> optional on-chain anchor + on-chain witness-set pinning, deployed and exercised on a validator);
 > single-machine simulation; PQ crates unaudited.
 
 ---
@@ -218,7 +219,9 @@ requires the federation itself.
 
 **Does NOT guarantee.** Witnesses are a trust assumption, not a proof: if `threshold`-or-more
 witnesses collude (or are the same compromising party), they can cosign a fork and the client
-will accept it. Security degrades to the honesty of the quorum. Crucially, **no real witness
+will accept it. Security degrades to the honesty of the quorum. (A provider substituting its OWN
+witness keys is a *different* attack, and that one IS now caught — see M8, the on-chain
+witness-set commitment in §6 — but collusion of the genuine quorum is not.) Crucially, **no real witness
 network is run** — there is no gossip protocol, no independent operators, no network transport.
 The whole thing is simulated in-process (the demo generates three witnesses on one machine,
 `main.rs:166`). The anti-split-view property is *mechanically* demonstrated but not
@@ -314,8 +317,12 @@ uses an unkeyed string tag
   witness keys + threshold, rather than trusting a supplied root. *Still open:* `verify_receipt`
   does not itself use `kem_ciphertext` (HNDL is enforced at decapsulation, one layer up); there is
   no replay/used-nonce state; STHs carry no timestamp (an omission/freshness attack — a stale but
-  validly-signed STH can be replayed); and the witness set + hardware-root key are pinned out of
-  band, so that distribution channel is an assumed-authentic trust input.
+  validly-signed STH can be replayed); the **witness set can now be authenticated against an
+  on-chain commitment** (M8: `witness::new_checked` + the `anchor_witness_set` Solana instruction),
+  so a provider can no longer substitute its own witness keys via the bundle — the residual trust
+  is the program id / log authority the client reads that commitment from, the hardware-root key,
+  and that fewer than `threshold` genuine witnesses collude. (The CLI demo and the on-chain
+  `anchor test` exercise this pinning; the WASM verifier does not yet wire it.)
 
 ---
 

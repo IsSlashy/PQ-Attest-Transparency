@@ -53,4 +53,40 @@ describe("sth-anchor: append-only, immutable-per-epoch STH anchoring", () => {
 
     console.log("    on-chain: root anchored, equivocation rejected, next epoch accepted ✓");
   });
+
+  it("anchors a witness-set commitment immutably", async () => {
+    const ws = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("witnessset"), authority.toBuffer()],
+      program.programId
+    )[0];
+    const commit = Array(32).fill(7);
+
+    await program.methods
+      .anchorWitnessSet(commit)
+      .accountsPartial({
+        witnessSet: ws,
+        logAuthority: authority,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .rpc();
+    const acct = await program.account.witnessSet.fetch(ws);
+    assert.deepEqual(acct.commitment, commit, "stored witness-set commitment must match");
+
+    // a second, DIFFERENT commitment at the same PDA must be rejected (init-once)
+    let rejected = false;
+    try {
+      await program.methods
+        .anchorWitnessSet(Array(32).fill(8))
+        .accountsPartial({
+          witnessSet: ws,
+          logAuthority: authority,
+          systemProgram: anchor.web3.SystemProgram.programId,
+        })
+        .rpc();
+    } catch (_e) {
+      rejected = true;
+    }
+    assert.isTrue(rejected, "a second, different witness-set commitment must be rejected");
+    console.log("    on-chain: witness-set commitment anchored, second one rejected ✓");
+  });
 });

@@ -26,9 +26,11 @@ already written — so the client needs **no witness federation** to detect a sp
 ## The Solana program
 
 ```
-account SthAnchor { log_id: Pubkey, epoch: u64, root: [u8;32], timestamp: i64, bump: u8 }
-PDA seeds = [b"sth", log_authority, epoch.to_le_bytes()]
-instruction anchor_root(epoch, root):  init the PDA, store (root, Clock::now)
+account SthAnchor  { log_id, epoch, root, timestamp, bump }   PDA: [b"sth", log_authority, epoch]
+account WitnessSet { log_id, commitment, timestamp, bump }    PDA: [b"witnessset", log_authority]
+anchor_root(epoch, root)        — init-once per (log, epoch): immutable STH-root anchor
+anchor_witness_set(commitment)  — init-once per log: immutable witness-set commitment (M8), so a
+                                  client authenticates the witness keys from the chain, not the provider
 ```
 
 Immutability comes for free from Anchor's `init`: a PDA can be **created exactly once**, so a
@@ -54,9 +56,10 @@ code one.
 - **Behaviour exercised on-chain.** `onchain/test-in-wsl.sh` runs `anchor test` (build → validator
   → deploy → a TS client, `tests/sth-anchor.ts`): it publishes a root at epoch 7 and reads it
   back; submits a SECOND, different root at epoch 7 and asserts it is **rejected** (the PDA is
-  init-once); then publishes at epoch 8. Result: **`1 passing` — "root anchored, equivocation
-  rejected, next epoch accepted ✓"**. This is the same property the in-process `MockLedger` test
-  proves, now demonstrated against a real deployed program.
+  init-once); then publishes at epoch 8. A second test anchors a **witness-set commitment** and
+  asserts a second, different commitment is rejected (M8). Result: **`2 passing`**. These are the
+  same properties the in-process `MockLedger` / `new_checked` tests prove, now demonstrated against
+  a real deployed program.
 
 Reproduce:
 

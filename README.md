@@ -109,11 +109,11 @@ node scripts/wasm-smoke.cjs             # honest=accept, tampered=reject, split-
 
 ## Verified end to end
 
-`cargo test` (13) · `pqtl-demo` (6 attack/defence scenarios) · `pqtl-bench` (release) · the WASM
+`cargo test` (15) · `pqtl-demo` (7 attack/defence scenarios) · `pqtl-bench` (release) · the WASM
 verifier (browser + a 5-case Node smoke test) — all on a stock Rust toolchain. The **optional**
 on-chain program is verified separately with `anchor test` (**WSL only** — Solana/Anchor toolchain
-+ a local validator; see [`docs/CHAIN-ANCHOR.md`](./docs/CHAIN-ANCHOR.md)): build → deploy → a
-second root at one epoch is rejected. Nothing in the demos is faked beyond the documented mocks
++ a local validator; see [`docs/CHAIN-ANCHOR.md`](./docs/CHAIN-ANCHOR.md)): 2 passing — a second
+root at one epoch, and a second witness-set commitment, are both rejected on-chain. Nothing in the demos is faked beyond the documented mocks
 (the hardware quote, and the in-process witness/ledger stand-ins) — see [`THREAT-MODEL.md`](./THREAT-MODEL.md).
 
 ## Cost (the PQ tax)
