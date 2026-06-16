@@ -2,14 +2,12 @@
 //! client-side receipt verifier for a post-quantum transparency layer over
 //! confidential inference.
 //!
-//! # Status: M1 in progress
-//! STH signing is now **real SLH-DSA** (FIPS 205, see [`slh`]). Still placeholder /
-//! pending:
-//! - the session binding is now a real **hybrid X25519 + ML-KEM-768** KEM (X-Wing, see
-//!   [`kem`]): `report_data` commits to a real 1216-byte public key, and the keyserver's
-//!   ciphertext establishes an HNDL-safe session key the client recovers by decapsulation;
-//! - the Merkle log now has RFC 6962 inclusion AND **consistency proofs** (the "history
-//!   cannot be rewritten" property); it is not yet incremental (an O(log n) optimization).
+//! # Status: M0–M4 complete; the verification path is RNG-free and wasm-ready.
+//! Real crypto throughout: SLH-DSA STH signatures ([`slh`]); RFC 6962 Merkle inclusion +
+//! consistency proofs ([`log`]); hybrid X25519+ML-KEM-768 session binding ([`kem`]); witness
+//! anti-split-view ([`witness`]). Caveats (see `THREAT-MODEL.md`): the hardware attestation
+//! quote ([`QuoteProvider`]) is MOCKED and the PQ crates are UNAUDITED. Pending: an incremental
+//! O(log n) Merkle log (currently rebuilt O(n) per query).
 //!
 //! Design rule (DECISIONS.md): every trust boundary is a trait with a mock impl
 //! and a documented real path — so the simulated parts are explicit and swappable.

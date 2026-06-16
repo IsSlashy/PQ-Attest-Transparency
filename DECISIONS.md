@@ -47,7 +47,7 @@
 - **Problème** : empêcher le *split-view* (le log montre deux historiques différents à deux clients). En Web2 ça coûte soit un réseau de *gossip* à amorcer, soit une fédération de *témoins* indépendants à recruter/faire confiance. Une chaîne publique fournit un médium append-only déjà amorcé sur lequel on n'ancre que la **racine** (32 o) par époque — O(1).
 - **Décision** : le cœur du log ne sait pas *comment* sa racine devient non-équivoquable. Interface `trait Anchor` avec implémentations interchangeables :
   - `LocalAnchor` (démo) ;
-  - `WitnessAnchor` (**Web2, cœur MVP**) : STH co-signés par des témoins indépendants — *adoptable par Anthropic tel quel, sans aucune blockchain* ;
+  - `WitnessAnchor` (**Web2, cœur MVP**) : STH co-signés par des témoins indépendants — *architecturalement adoptable en Web2, sans aucune blockchain* (réf., pas drop-in : présuppose un quote matériel réel, des crates auditées, une fédération de témoins opérée, et des builds reproductibles) ;
   - `ChainAnchor` (**option post-MVP**) : racine ancrée on-chain via le verifier Protocol-01.
 - **Cadre d'honnêteté** : la chaîne n'apporte **pas de la vitesse** (elle est plus lente). Ce qu'elle supprime, c'est le **coût de bootstrap/opération d'une fédération de témoins**. À écrire tel quel dans le README ; ne jamais vendre « blockchain = performance ».
 - **Conséquence** : le MVP est complet et défendable en Web2 pur. La chaîne est anticipée par l'interface mais hors du chemin critique < 5 min.

@@ -13,6 +13,10 @@ path = "src/main.rs"
 name = "pqtl-emit"
 path = "src/emit.rs"
 
+[[bin]]
+name = "pqtl-bench"
+path = "src/bench.rs"
+
 [dependencies]
 pqtl-core = { path = "../pqtl-core" }
 serde_json = "1"
