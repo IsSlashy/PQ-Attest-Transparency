@@ -4,9 +4,8 @@
 Cargo.lock.bak
 .DS_Store
 
-# Generated wasm artifacts and the emitted sample receipt (rebuild via scripts/build-web-demo.sh)
-/web/pkg
-/web/sample-receipt.json
+# web/pkg and web/sample-receipt.json are committed so the Vercel static deploy is self-contained
+# (regenerate them with scripts/build-web-demo.sh).
 /crates/pqtl-wasm/pkg-node
 
 # On-chain (Solana/Anchor) build artifacts — rebuild via onchain/build-in-wsl.sh

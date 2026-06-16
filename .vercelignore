@@ -1,0 +1,6 @@
+target
+onchain/target
+onchain/node_modules
+onchain/.anchor
+onchain/test-ledger
+crates/pqtl-wasm/pkg-node
