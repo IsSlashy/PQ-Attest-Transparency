@@ -514,7 +514,7 @@ pub mod witness {
         cosignature_bytes, Anchor, ConsistencyProof, CosignedSth, Hash, SignedTreeHead,
         SthVerifier, WitnessCosignature,
     };
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
 
     /// A witness: holds its own signing key and the last STH it attested to.
     /// Requires the `rng` feature (keygen + signing).
@@ -571,12 +571,14 @@ pub mod witness {
         }
     }
 
-    /// Client-side anchor: trusts a root only once a quorum of known witnesses has
-    /// validly cosigned it. RNG-free → usable in the wasm verifier.
+    /// Client-side anchor: trusts a `(tree_size, root)` only once a quorum of known witnesses
+    /// has validly cosigned it AND it is consistent with what the client already trusts. RNG-free
+    /// → usable in the wasm verifier.
     pub struct WitnessAnchor {
         trusted: Vec<(u32, SlhVerifier)>,
         threshold: usize,
-        roots: HashSet<Hash>,
+        accepted: HashSet<(u64, Hash)>,
+        by_size: HashMap<u64, Hash>,
     }
 
     impl WitnessAnchor {
@@ -584,14 +586,28 @@ pub mod witness {
             Self {
                 trusted,
                 threshold,
-                roots: HashSet::new(),
+                accepted: HashSet::new(),
+                by_size: HashMap::new(),
             }
         }
 
-        /// Verify a cosigned STH: count DISTINCT trusted witnesses with a valid
-        /// cosignature; if `>= threshold`, trust the root. Returns whether it was trusted.
-        pub fn ingest(&mut self, cosigned: &CosignedSth) -> bool {
-            let msg = cosignature_bytes(cosigned.sth.tree_size, &cosigned.sth.root);
+        /// Accept a cosigned STH's root iff:
+        /// (a) a quorum of `threshold` DISTINCT trusted witnesses validly cosigned it;
+        /// (b) it does not **equivocate** — no different root is already trusted at this size;
+        /// (c) if it grows past the highest size we trust, `consistency` proves the new tree
+        ///     extends that trusted root (client-side append-only check, defence-in-depth
+        ///     against a colluding quorum that the witness-side check would otherwise miss).
+        /// Returns whether the root was accepted.
+        pub fn ingest(
+            &mut self,
+            cosigned: &CosignedSth,
+            consistency: Option<&ConsistencyProof>,
+        ) -> bool {
+            let size = cosigned.sth.tree_size;
+            let root = cosigned.sth.root;
+
+            // (a) quorum of distinct, valid cosignatures
+            let msg = cosignature_bytes(size, &root);
             let mut seen = HashSet::new();
             for cs in &cosigned.cosignatures {
                 if seen.contains(&cs.witness_id) {
@@ -603,22 +619,43 @@ pub mod witness {
                     }
                 }
             }
-            if seen.len() >= self.threshold {
-                self.roots.insert(cosigned.sth.root);
-                true
-            } else {
-                false
+            if seen.len() < self.threshold {
+                return false;
             }
+
+            // (b) no same-size equivocation
+            if let Some(prev) = self.by_size.get(&size) {
+                if *prev != root {
+                    return false; // a different root at the same size == split-view
+                }
+            }
+
+            // (c) append-only across the highest root we already trust
+            if let Some((&max_size, &max_root)) = self.by_size.iter().max_by_key(|(s, _)| **s) {
+                if size > max_size {
+                    let ok = matches!(consistency, Some(p)
+                        if p.first_size == max_size
+                            && p.second_size == size
+                            && verify_consistency(p, &max_root, &root));
+                    if !ok {
+                        return false;
+                    }
+                }
+            }
+
+            self.by_size.insert(size, root);
+            self.accepted.insert((size, root));
+            true
         }
     }
 
     impl Anchor for WitnessAnchor {
         fn anchor(&mut self, _sth: &SignedTreeHead) {
             // No-op by design: a root becomes trusted only through `ingest` (witness
-            // cosignatures), never by bare assertion. See DECISIONS.md ADR-004.
+            // cosignatures + consistency), never by bare assertion. See DECISIONS.md ADR-004.
         }
         fn is_anchored(&self, sth: &SignedTreeHead) -> bool {
-            self.roots.contains(&sth.root)
+            self.accepted.contains(&(sth.tree_size, sth.root))
         }
     }
 }
@@ -1246,7 +1283,7 @@ mod tests {
         // Quorum of 2 reached by 3 cosignatures.
         let trusted: Vec<_> = witnesses.iter().map(|w| (w.id(), w.verifier())).collect();
         let mut anchor = WitnessAnchor::new(trusted, 2);
-        assert!(anchor.ingest(&cosigned));
+        assert!(anchor.ingest(&cosigned, None));
         assert!(anchor.is_anchored(&sth));
 
         // A single cosignature does not meet threshold 2.
@@ -1256,7 +1293,7 @@ mod tests {
             sth: sth.clone(),
             cosignatures: vec![cosigned.cosignatures[0].clone()],
         };
-        assert!(!anchor2.ingest(&one));
+        assert!(!anchor2.ingest(&one, None));
         assert!(!anchor2.is_anchored(&sth));
     }
 
@@ -1295,5 +1332,37 @@ mod tests {
         assert!(w.cosign(&forked, None).is_none());
         // sanity: root1 really differs from the fork's history
         assert_ne!(root1, fork.root());
+    }
+
+    #[test]
+    fn witness_anchor_rejects_same_size_equivocation() {
+        // Client-side defence-in-depth: even if a COLLUDING witness quorum cosigns two different
+        // roots at the same size (bypassing the witness-side fork refusal), the client catches it.
+        use super::log::TransparencyLog;
+        use super::slh::SlhSigner;
+        use super::witness::WitnessAnchor;
+        use super::{cosignature_bytes, CosignedSth, WitnessCosignature};
+
+        let op = SlhSigner::generate().unwrap();
+        let mut log_a = TransparencyLog::new();
+        log_a.append(&m("a"));
+        let sth_a = log_a.signed_tree_head(&op);
+        let mut log_b = TransparencyLog::new();
+        log_b.append(&m("b"));
+        let sth_b = log_b.signed_tree_head(&op);
+        assert_ne!(sth_a.root, sth_b.root);
+
+        let mal = SlhSigner::generate().unwrap();
+        let mut anchor = WitnessAnchor::new(vec![(0u32, mal.verifier())], 1);
+        let cosig = |sth: &SignedTreeHead| CosignedSth {
+            sth: sth.clone(),
+            cosignatures: vec![WitnessCosignature {
+                witness_id: 0,
+                signature: mal.sign(&cosignature_bytes(sth.tree_size, &sth.root)),
+            }],
+        };
+        assert!(anchor.ingest(&cosig(&sth_a), None)); // trust (1, root_a)
+        assert!(!anchor.ingest(&cosig(&sth_b), None)); // same size, different root → rejected
+        assert!(anchor.is_anchored(&sth_a) && !anchor.is_anchored(&sth_b));
     }
 }

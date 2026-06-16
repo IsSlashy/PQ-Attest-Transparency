@@ -49,8 +49,8 @@ fn keyserver_issue(
 }
 
 fn main() {
-    println!("== PQ-Attest-Transparency — démo M0–M4 (crypto réelle) ==");
-    println!("   STH=SLH-DSA · log=RFC6962 inclusion+consistance · binding=X-Wing · anti-split-view=témoins\n");
+    println!("== PQ-Attest-Transparency — démo M0–M5 (crypto réelle, non auditée) ==");
+    println!("   quote=racine-hw · STH=SLH-DSA · log=RFC6962 incl+consist · binding=X-Wing · anti-split-view=témoins\n");
 
     // Public transparency log + its operator's SLH-DSA signer + the anchor.
     let mut log = TransparencyLog::new();
@@ -179,7 +179,7 @@ fn main() {
         sth: sth_now.clone(),
         cosignatures: cosigs,
     };
-    if wanchor.ingest(&cosigned) {
+    if wanchor.ingest(&cosigned, None) {
         println!(
             "[client] STH honnête co-signé par {} témoins ≥ seuil → racine de confiance → ✅",
             cosigned.cosignatures.len()
@@ -201,17 +201,53 @@ fn main() {
         cosignatures: Vec::new(),
     };
     print!("[attaquant] tente de faire co-signer un historique réécrit : {accepting}/3 témoins acceptent. ");
-    if wanchor.ingest(&forged) {
+    if wanchor.ingest(&forged, None) {
         println!("⚠️  ancré — BUG");
     } else {
         println!("→ < seuil, racine non ancrée → ❌ SPLIT-VIEW BLOQUÉ");
     }
+
+    // ---------------- Scenario 5: the honest win (a logged backdoor cannot be SECRET) ----------------
+    println!("\n--- Scénario 5 : le vrai gain — un backdoor LOGGÉ vérifie (le gain n'est PAS le blocage) ---");
+    let mut blog = TransparencyLog::new();
+    let backdoor = measurement_of("v1.0-COMPELLED-BACKDOOR", b"<backdoored loader>");
+    let bi = blog.append(&backdoor);
+    let bsth = blog.signed_tree_head(&signer);
+    let mut bw: Vec<Witness> = (0..3).map(Witness::generate).collect();
+    let btrusted: Vec<_> = bw.iter().map(|w| (w.id(), w.verifier())).collect();
+    let mut banchor = WitnessAnchor::new(btrusted, 2);
+    let bcos: Vec<_> = bw.iter_mut().filter_map(|w| w.cosign(&bsth, None)).collect();
+    banchor.ingest(
+        &CosignedSth {
+            sth: bsth.clone(),
+            cosignatures: bcos,
+        },
+        None,
+    );
+    let breceipt = Receipt {
+        quote: qp.quote(&nonce, &kem, &backdoor),
+        nonce: nonce.clone(),
+        kem_pubkey: kem.clone(),
+        kem_ciphertext: encapsulate(&kem.0).unwrap().0,
+        inclusion: blog.inclusion_proof(bi).unwrap(),
+        sth: bsth.clone(),
+    };
+    match verify_receipt(&breceipt, &nonce, &qv, &verifier, &banchor) {
+        Ok(()) => println!("[client] reçu VÉRIFIÉ ✅ — la clé EST libérée. Rien n'est « bloqué » ici."),
+        Err(e) => println!("[client] {e:?} (inattendu — BUG)"),
+    }
+    println!(
+        "[public] MAIS la mesure backdoorée est désormais publiquement, non-répudiablement, dans\n         \
+         le log co-signé par les témoins. Le provider ne peut PAS cibler EN SECRET — c'est inscrit\n         \
+         au registre public. Le gain réel : NON-ÉQUIVOCATION + responsabilité, pas le blocage."
+    );
 
     println!(
         "\nRésumé : le client refuse un loader que l'attestation classique seule aurait accepté.\n\
          Ce que cette démo prouve : la NON-ÉQUIVOCATION (un build doit être publiquement loggé\n\
          pour qu'un reçu vérifiable existe), l'APPEND-ONLY (historique non réécrit),\n\
          un canal de session HNDL-safe (X-Wing), et l'anti-split-view par co-signature de témoins.\n\
-         Vérifieur compilé en WASM (M3). Reste : bench (M5) + ChainAnchor on-chain (optionnel)."
+         Et (scénario 5) : un backdoor LOGGÉ vérifie — le gain est la non-équivocation, pas le blocage.\n\
+         Vérifieur compilé en WASM. Limites & residual risks : voir THREAT-MODEL.md ; coûts : BENCHMARKS.md."
     );
 }

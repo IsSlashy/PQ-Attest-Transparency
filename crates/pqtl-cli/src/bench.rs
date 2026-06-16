@@ -155,7 +155,7 @@ fn main() {
     };
     row("WitnessAnchor.ingest (1 cosig)", 200, || {
         let mut a = WitnessAnchor::new(vec![(7u32, w.verifier())], 1);
-        black_box(a.ingest(black_box(&cosigned)));
+        black_box(a.ingest(black_box(&cosigned), None));
     });
 
     // ---- Sizes ----
