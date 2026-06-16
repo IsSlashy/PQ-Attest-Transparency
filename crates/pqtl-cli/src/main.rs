@@ -8,7 +8,7 @@
 //!
 //! The point: the client refuses a loader that classic attestation alone would accept.
 
-use pqtl_core::log::TransparencyLog;
+use pqtl_core::log::{verify_consistency, TransparencyLog};
 use pqtl_core::slh::SlhSigner;
 use pqtl_core::verify::verify_receipt;
 use pqtl_core::*;
@@ -42,7 +42,7 @@ fn keyserver_issue(
 }
 
 fn main() {
-    println!("== PQ-Attest-Transparency — M1 : STH signé SLH-DSA réel ==");
+    println!("== PQ-Attest-Transparency — M1 : STH SLH-DSA + consistance RFC6962 ==");
     println!("   (binding ML-KEM = placeholder jusqu'en M2)\n");
 
     // Public transparency log + its operator's SLH-DSA signer + the anchor.
@@ -109,10 +109,40 @@ fn main() {
         Err(e) => println!("[client] reçu rejeté ({e:?}) → ❌ ATTAQUE DÉTECTÉE"),
     }
 
+    // ---------------- Scenario 3: history cannot be rewritten ----------------
+    println!("\n--- Scénario 3 : l'historique ne peut pas être réécrit (append-only) ---");
+    let root_before = log.root(); // log currently holds only the honest build (size 1)
+    let size_before = log.len();
+    // the log grows: two more honest builds get published
+    log.append(&measurement_of("v1.1", b"<loader 1.1>"));
+    log.append(&measurement_of("v1.2", b"<loader 1.2>"));
+    let sth_after = log.signed_tree_head(&signer);
+    let cproof = log.consistency_proof(size_before).unwrap();
+    print!(
+        "[client] log {} → {} : preuve de consistance ({} hash). ",
+        size_before,
+        sth_after.tree_size,
+        cproof.path.len()
+    );
+    if verify_consistency(&cproof, &root_before, &sth_after.root) {
+        println!("✅ append-only prouvé (l'ancien STH est un préfixe du nouveau)");
+    } else {
+        println!("❌ (BUG)");
+    }
+    // a provider that secretly rewrote the first entry produces a different old root
+    let mut forked = TransparencyLog::new();
+    forked.append(&measurement_of("v1.0-rewritten", b"<swapped loader>"));
+    print!("[client] même preuve, mais racine historique réécrite en douce : ");
+    if verify_consistency(&cproof, &forked.root(), &sth_after.root) {
+        println!("⚠️  acceptée — BUG");
+    } else {
+        println!("❌ REJETÉE → réécriture d'historique détectée");
+    }
+
     println!(
         "\nRésumé : le client refuse un loader que l'attestation classique seule aurait accepté.\n\
          Ce que ce squelette prouve : la NON-ÉQUIVOCATION (un build doit être publiquement loggé\n\
-         pour qu'un reçu vérifiable existe). Reste : preuves de consistance RFC6962 (M1),\n\
-         binding ML-KEM hybride réel (M2), co-signature de témoins (M4)."
+         pour qu'un reçu vérifiable existe), et l'APPEND-ONLY (historique non réécrit).\n\
+         Reste : binding ML-KEM hybride réel (M2), co-signature de témoins (M4)."
     );
 }

@@ -8,8 +8,8 @@
 //! - the session binding — M2 wires a real **hybrid X25519 + ML-KEM-768** KEM; for now
 //!   the `report_data` hash is real and domain-separated, but the KEM public key it
 //!   commits to is placeholder bytes;
-//! - the Merkle log is correct but not yet incremental and lacks RFC 6962 **consistency
-//!   proofs** (the "history cannot be rewritten" property) — next M1 step.
+//! - the Merkle log now has RFC 6962 inclusion AND **consistency proofs** (the "history
+//!   cannot be rewritten" property); it is not yet incremental (an O(log n) optimization).
 //!
 //! Design rule (DECISIONS.md): every trust boundary is a trait with a mock impl
 //! and a documented real path — so the simulated parts are explicit and swappable.
@@ -76,6 +76,15 @@ pub struct InclusionProof {
     pub leaf_index: u64,
     pub tree_size: u64,
     pub audit_path: Vec<Hash>,
+}
+
+/// An RFC 6962 consistency proof: proves the size-`first_size` tree is a prefix of
+/// the size-`second_size` tree — i.e. the log was only appended to, never rewritten.
+#[derive(Clone, Debug)]
+pub struct ConsistencyProof {
+    pub first_size: u64,
+    pub second_size: u64,
+    pub path: Vec<Hash>,
 }
 
 /// The client-facing session receipt — the central object of the whole artifact.
@@ -323,6 +332,59 @@ pub mod log {
         }
     }
 
+    /// RFC 6962 SUBPROOF, the recursive core of a consistency proof.
+    fn cons_subproof(m: usize, d: &[Hash], b: bool) -> Vec<Hash> {
+        let n = d.len();
+        if m == n {
+            return if b { vec![] } else { vec![mth(d)] };
+        }
+        let k = split(n);
+        if m <= k {
+            let mut p = cons_subproof(m, &d[..k], b);
+            p.push(mth(&d[k..]));
+            p
+        } else {
+            let mut p = cons_subproof(m - k, &d[k..], false);
+            p.push(mth(&d[..k]));
+            p
+        }
+    }
+
+    // --- shared proof-replay helpers (RFC 6962 / Trillian) ---
+    fn bit_len(x: u64) -> usize {
+        (64 - x.leading_zeros()) as usize
+    }
+    /// Chain `seed` up through `proof`, choosing side by the bits of `index`.
+    fn chain_inner(seed: Hash, proof: &[Hash], index: u64) -> Hash {
+        let mut acc = seed;
+        for (i, h) in proof.iter().enumerate() {
+            acc = if (index >> i) & 1 == 0 {
+                node_hash(&acc, h)
+            } else {
+                node_hash(h, &acc)
+            };
+        }
+        acc
+    }
+    /// Like `chain_inner` but only folds the right-side (set-bit) nodes.
+    fn chain_inner_right(seed: Hash, proof: &[Hash], index: u64) -> Hash {
+        let mut acc = seed;
+        for (i, h) in proof.iter().enumerate() {
+            if (index >> i) & 1 == 1 {
+                acc = node_hash(h, &acc);
+            }
+        }
+        acc
+    }
+    /// Fold the remaining border nodes (always left siblings).
+    fn chain_border_right(seed: Hash, proof: &[Hash]) -> Hash {
+        let mut acc = seed;
+        for h in proof {
+            acc = node_hash(h, &acc);
+        }
+        acc
+    }
+
     /// An append-only log of measurements.
     #[derive(Default)]
     pub struct TransparencyLog {
@@ -382,6 +444,24 @@ pub mod log {
                 signature,
             }
         }
+
+        /// RFC 6962 consistency proof from `first_size` to the current size.
+        pub fn consistency_proof(&self, first_size: u64) -> Option<ConsistencyProof> {
+            let n = self.leaves.len() as u64;
+            if first_size == 0 || first_size > n {
+                return None;
+            }
+            let path = if first_size == n {
+                Vec::new()
+            } else {
+                cons_subproof(first_size as usize, &self.leaves, true)
+            };
+            Some(ConsistencyProof {
+                first_size,
+                second_size: n,
+                path,
+            })
+        }
     }
 
     /// Verify an inclusion proof against `root` (RFC 6962 index-bit reconstruction).
@@ -408,6 +488,56 @@ pub mod log {
             res = node_hash(sib, &res);
         }
         res == *root
+    }
+
+    /// Verify an RFC 6962 consistency proof: that the tree committed by `first_root`
+    /// (size `proof.first_size`) is a prefix of the tree committed by `second_root`
+    /// (size `proof.second_size`). This is the "history was not rewritten" check.
+    pub fn verify_consistency(
+        proof: &ConsistencyProof,
+        first_root: &Hash,
+        second_root: &Hash,
+    ) -> bool {
+        let m = proof.first_size;
+        let n = proof.second_size;
+        let path = &proof.path;
+        if n < m {
+            return false;
+        }
+        if m == n {
+            return path.is_empty() && first_root == second_root;
+        }
+        if m == 0 {
+            // every tree is consistent with the empty tree
+            return path.is_empty();
+        }
+        // 0 < m < n
+        let inner0 = bit_len((m - 1) ^ (n - 1));
+        let border = ((m - 1) >> inner0).count_ones() as usize;
+        let shift = m.trailing_zeros() as usize;
+        if inner0 < shift {
+            return false;
+        }
+        let inner = inner0 - shift;
+
+        // The seed is root1 when m is a power of two, else the first proof element.
+        let (seed, start) = if m == (1u64 << shift) {
+            (*first_root, 0usize)
+        } else if let Some(h) = path.first() {
+            (*h, 1usize)
+        } else {
+            return false;
+        };
+        if path.len() != start + inner + border {
+            return false;
+        }
+        let rest = &path[start..];
+        let mask = (m - 1) >> shift;
+
+        let hash1 = chain_border_right(chain_inner_right(seed, &rest[..inner], mask), &rest[inner..]);
+        let hash2 = chain_border_right(chain_inner(seed, &rest[..inner], mask), &rest[inner..]);
+
+        &hash1 == first_root && &hash2 == second_root
     }
 }
 
@@ -581,5 +711,54 @@ mod tests {
             sth: log.signed_tree_head(&signer),
         };
         assert!(verify::verify_receipt(&r, &nonce, &verifier, &anchor).is_ok());
+    }
+
+    #[test]
+    fn consistency_proofs_validate_for_all_sizes() {
+        use super::log::{verify_consistency, TransparencyLog};
+        for n in 1u64..=33 {
+            let mut log = TransparencyLog::new();
+            let mut roots = vec![[0u8; 32]; (n + 1) as usize]; // roots[size] = root at that size
+            for i in 0..n {
+                log.append(&m(&format!("c-{i}")));
+                roots[(i + 1) as usize] = log.root();
+            }
+            let root_n = roots[n as usize];
+            for first in 1..n {
+                let proof = log.consistency_proof(first).unwrap();
+                let root_first = roots[first as usize];
+                assert!(
+                    verify_consistency(&proof, &root_first, &root_n),
+                    "consistency n={n} first={first} should verify"
+                );
+                // tampered second root must be rejected
+                assert!(!verify_consistency(&proof, &root_first, &m("evil").0));
+                // tampered first root must be rejected
+                assert!(!verify_consistency(&proof, &m("evil").0, &root_n));
+            }
+            // first == n: empty proof, tree consistent with itself
+            let p = log.consistency_proof(n).unwrap();
+            assert!(verify_consistency(&p, &root_n, &root_n));
+        }
+    }
+
+    #[test]
+    fn rewritten_history_fails_consistency() {
+        use super::log::{verify_consistency, TransparencyLog};
+        let mut log = TransparencyLog::new();
+        log.append(&m("a"));
+        let root1 = log.root();
+        log.append(&m("b"));
+        log.append(&m("c"));
+        let root3 = log.root();
+
+        let proof = log.consistency_proof(1).unwrap();
+        assert!(verify_consistency(&proof, &root1, &root3));
+
+        // A fork that secretly rewrote leaf 0 has a different size-1 root; the honest
+        // proof cannot reconcile it with the size-3 root.
+        let mut fork = TransparencyLog::new();
+        fork.append(&m("a-rewritten"));
+        assert!(!verify_consistency(&proof, &fork.root(), &root3));
     }
 }
