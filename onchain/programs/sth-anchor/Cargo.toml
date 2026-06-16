@@ -1,0 +1,20 @@
+[package]
+name = "sth-anchor"
+version = "0.1.0"
+edition = "2021"
+description = "Minimal Solana program: an append-only, immutable-per-epoch anchor for transparency-log STH roots (the ChainAnchor backend)."
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "sth_anchor"
+
+[features]
+default = []
+cpi = ["no-entrypoint"]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+idl-build = ["anchor-lang/idl-build"]
+
+[dependencies]
+anchor-lang = "0.32.1"

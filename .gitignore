@@ -8,3 +8,8 @@ Cargo.lock.bak
 /web/pkg
 /web/sample-receipt.json
 /crates/pqtl-wasm/pkg-node
+
+# On-chain (Solana/Anchor) build artifacts — rebuild via onchain/build-in-wsl.sh
+/onchain/target
+/onchain/.anchor
+/onchain/test-ledger

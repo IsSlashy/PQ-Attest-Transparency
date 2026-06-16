@@ -274,7 +274,9 @@ uses an unkeyed string tag
 - *A real witness/gossip network.* Only sketched; no operators, no transport, no gossip
   (`DECISIONS.md:98`, `RESEARCH.md:168`).
 - *Reproducible builds.* Documented as the dependency that makes tamper-evidence bite; not built.
-- *STARK inclusion proofs and on-chain `ChainAnchor`.* Optional, post-MVP (`DECISIONS.md:82`).
+- *STARK inclusion proofs.* Optional, post-MVP. (The on-chain `ChainAnchor` is now built — a real
+  Solana program, compiled to BPF and deployed to a local validator; see `docs/CHAIN-ANCHOR.md`.
+  It is an *alternative* anti-split-view backend, not part of the Web2 critical path.)
 - *Side channels, supply-chain compromise of the build toolchain itself, denial of service,
   and key-management/HSM operation.*
 

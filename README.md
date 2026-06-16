@@ -127,6 +127,8 @@ scripts/       build-web-demo.sh, wasm-smoke.cjs
 - [`BENCHMARKS.md`](./BENCHMARKS.md) — the "PQ tax": sizes vs classical, and latencies.
 - [`DECISIONS.md`](./DECISIONS.md) — ADRs + roadmap. [`RESEARCH.md`](./RESEARCH.md) — Phase 0.
 - [`docs/EXTRACTION.md`](./docs/EXTRACTION.md) — Protocol-01 reuse map + crate selection.
+- [`docs/CHAIN-ANCHOR.md`](./docs/CHAIN-ANCHOR.md) — the optional on-chain anchor (real Solana
+  program, built + deployed to a local validator); see `onchain/`.
 
 ## License
 

@@ -1,0 +1,10 @@
+# Separate workspace for the on-chain (Solana/Anchor) program, kept OUT of the main
+# Rust workspace so `cargo build` of the host crates never pulls Solana BPF deps.
+[workspace]
+members = ["programs/*"]
+resolver = "2"
+
+[profile.release]
+overflow-checks = true
+lto = "fat"
+codegen-units = 1
