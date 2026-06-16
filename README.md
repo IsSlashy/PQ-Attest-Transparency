@@ -84,7 +84,10 @@ cargo run --release -p pqtl-cli --bin pqtl-bench   # size/latency table (see BEN
 
 ## Run the browser verifier (M3)
 
-The receipt verifier compiles to WASM and runs entirely client-side:
+**Live, no install: https://pq-attest-transparency.vercel.app** — load it, click *Tamper* or
+*Drop witness cosignatures*, and watch the receipt get rejected, all verified in your browser.
+
+Or build and serve it locally — the receipt verifier compiles to WASM and runs entirely client-side:
 
 ```bash
 sh scripts/build-web-demo.sh            # emits a sample receipt + builds web/pkg

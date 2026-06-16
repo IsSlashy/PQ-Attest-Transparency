@@ -9,6 +9,9 @@ serve a targeted, backdoored build — it makes such a build **undeniable, not u
 Certificate Transparency, transposed to confidential inference — post-quantum, verified by the
 end user.
 
+**Try it in your browser (no install):** <https://pq-attest-transparency.vercel.app> — load it,
+flip a byte, watch the receipt get rejected. Repo: <https://github.com/IsSlashy/PQ-Attest-Transparency>
+
 ## The gap
 
 Confidential inference (e.g. Anthropic's *Confidential Inference via Trusted VMs*, 2025) proves a
@@ -78,5 +81,6 @@ logged hash is opaque; transparency makes a hidden backdoor undeniable *after* i
 detectable up front. Crates are unaudited; the TPM root is mocked. All written down.
 
 6/ Reproducible: `cargo test`, a CLI demo of six attack/defence scenarios, and a browser verifier
-on a stock Rust toolchain; the chain piece via `anchor test` (WSL + Solana/Anchor). Repo + threat
-model + benchmarks: <link>
+on a stock Rust toolchain; the chain piece via `anchor test` (WSL + Solana/Anchor). Verify it
+yourself in your browser: https://pq-attest-transparency.vercel.app · repo (+ threat model +
+benchmarks): https://github.com/IsSlashy/PQ-Attest-Transparency
