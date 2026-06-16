@@ -13,3 +13,4 @@ Cargo.lock.bak
 /onchain/target
 /onchain/.anchor
 /onchain/test-ledger
+/onchain/node_modules

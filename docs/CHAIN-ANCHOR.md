@@ -42,29 +42,34 @@ to the STH root in its receipt. (Per the M5 extraction audit, the Protocol-01 ST
 
 ## Verified status (honest)
 
-Built and deployed **in WSL** (Ubuntu) — Windows-native `cargo build-sbf` is blocked by a
-platform-tools symlink-extraction bug (`os error 183`), a host limitation, not a code one.
+Built, deployed, AND exercised end-to-end **in WSL** (Ubuntu) — Windows-native `cargo build-sbf`
+is blocked by a platform-tools symlink-extraction bug (`os error 183`), a host limitation, not a
+code one.
 
 - **Builds to deployable bytecode.** `onchain/build-in-wsl.sh` → `cargo build-sbf` produces
   `target/deploy/sth_anchor.so` (194,224 bytes), platform-tools v1.52 / solana 3.1.9. Host
-  `cargo check` also type-checks the source on a normal target.
+  `cargo check` also type-checks the source.
 - **Deploys to a live validator.** `onchain/deploy-in-wsl.sh` starts `solana-test-validator`,
-  deploys the `.so`, and `solana program show` confirms it on-chain (owner
-  `BPFLoaderUpgradeable`, data length 194,224).
+  deploys the `.so`, and `solana program show` confirms it on-chain (owner `BPFLoaderUpgradeable`).
+- **Behaviour exercised on-chain.** `onchain/test-in-wsl.sh` runs `anchor test` (build → validator
+  → deploy → a TS client, `tests/sth-anchor.ts`): it publishes a root at epoch 7 and reads it
+  back; submits a SECOND, different root at epoch 7 and asserts it is **rejected** (the PDA is
+  init-once); then publishes at epoch 8. Result: **`1 passing` — "root anchored, equivocation
+  rejected, next epoch accepted ✓"**. This is the same property the in-process `MockLedger` test
+  proves, now demonstrated against a real deployed program.
 
 Reproduce:
 
 ```bash
-wsl bash /mnt/<drive>/<path>/onchain/build-in-wsl.sh    # build the .so
-wsl bash /mnt/<drive>/<path>/onchain/deploy-in-wsl.sh   # deploy to a local validator
+wsl bash /mnt/<drive>/<path>/onchain/build-in-wsl.sh   # just build the .so
+wsl bash /mnt/<drive>/<path>/onchain/test-in-wsl.sh    # full: build + validator + deploy + exercise
 ```
 
-**Honest gaps.** (1) `declare_id!` in the source is a placeholder; raw `solana program deploy`
-assigns a fresh program id (here `3uX7o96xaZrjAXpNEEQCkxdHRQqBFRgpR3jUd5gUDjUC`), whereas a real
-deployment uses `anchor deploy` to pin the declared keypair. (2) A full **client-driven exercise**
-(call `anchor_root`, read the PDA, show a conflicting second `anchor_root` at the same epoch is
-rejected) is the documented next step; the immutability behaviour itself is enforced by Anchor's
-`init` and is verified in-process by the tested `MockLedger`, which mirrors it exactly.
+**Honest notes.** `anchor keys sync` set `declare_id!` (and `Anchor.toml`) to the program
+keypair's id (`3uX7o96x…`); that keypair lives under `onchain/target` (gitignored), so a fresh
+clone regenerates its own id with `anchor keys sync`. Node 18 needs `yarn install
+--ignore-engines` (a transitive dep declares node ≥ 20). The exercise depends on a running local
+validator; nothing about it is mocked.
 
 ## Residual risks (for a real deployment)
 

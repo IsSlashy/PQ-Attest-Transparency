@@ -12,7 +12,7 @@
 
 use anchor_lang::prelude::*;
 
-declare_id!("Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS");
+declare_id!("3uX7o96xaZrjAXpNEEQCkxdHRQqBFRgpR3jUd5gUDjUC");
 
 #[program]
 pub mod sth_anchor {
