@@ -2,13 +2,14 @@
 //! client-side receipt verifier for a post-quantum transparency layer over
 //! confidential inference.
 //!
-//! # M0 status: PLACEHOLDER CRYPTO
-//! Every cryptographic operation here is a SHA-256 stand-in. There is **no real
-//! post-quantum primitive yet** — this milestone proves the end-to-end ✅/❌
-//! wiring (binding → inclusion → signature → anchor). Real primitives land later:
-//! - M1: append-only Merkle log + STH signed with **SLH-DSA** (FIPS 205) via an
-//!   audited crate (see DECISIONS.md ADR-003/005).
-//! - M2: session binding with a **hybrid X25519 + ML-KEM-768** KEM.
+//! # Status: M1 in progress
+//! STH signing is now **real SLH-DSA** (FIPS 205, see [`slh`]). Still placeholder /
+//! pending:
+//! - the session binding — M2 wires a real **hybrid X25519 + ML-KEM-768** KEM; for now
+//!   the `report_data` hash is real and domain-separated, but the KEM public key it
+//!   commits to is placeholder bytes;
+//! - the Merkle log is correct but not yet incremental and lacks RFC 6962 **consistency
+//!   proofs** (the "history cannot be rewritten" property) — next M1 step.
 //!
 //! Design rule (DECISIONS.md): every trust boundary is a trait with a mock impl
 //! and a documented real path — so the simulated parts are explicit and swappable.
@@ -110,12 +111,18 @@ pub trait QuoteProvider {
     fn quote(&self, nonce: &Nonce, kem_pubkey: &KemPublicKey, measurement: &Measurement) -> Quote;
 }
 
-/// Signs / verifies the Signed Tree Head. M0: [`PlaceholderSigner`] (a keyed SHA-256
-/// tag — NOT a signature). Real path (M1): SLH-DSA (FIPS 205) via an audited crate;
-/// the client then holds only the public verifying key.
+/// Verifies a Signed Tree Head signature — the ONLY capability the client needs,
+/// since it holds just the log operator's public key. M0: [`PlaceholderSigner`];
+/// M1: [`slh::SlhVerifier`] (SLH-DSA / FIPS 205). Verification needs no RNG, so a
+/// `SthVerifier` compiles cleanly to wasm32 for the M3 browser verifier.
+pub trait SthVerifier {
+    fn verify(&self, msg: &[u8], sig: &[u8]) -> bool;
+}
+
+/// Signs the Signed Tree Head (log-operator side; holds the secret key).
+/// M0: [`PlaceholderSigner`]; M1: [`slh::SlhSigner`].
 pub trait SthSigner {
     fn sign(&self, msg: &[u8]) -> Vec<u8>;
-    fn verify(&self, msg: &[u8], sig: &[u8]) -> bool;
 }
 
 /// Makes the log's history non-equivocal (anti split-view). M0: [`LocalAnchor`];
@@ -158,8 +165,9 @@ impl SthSigner for PlaceholderSigner {
     fn sign(&self, msg: &[u8]) -> Vec<u8> {
         sha256(&[b"pqtl:placeholder-sig", &self.key, msg]).to_vec()
     }
+}
+impl SthVerifier for PlaceholderSigner {
     fn verify(&self, msg: &[u8], sig: &[u8]) -> bool {
-        // constant-ish comparison is irrelevant for a placeholder; M1 uses real verify.
         self.sign(msg) == sig
     }
 }
@@ -175,6 +183,85 @@ impl Anchor for LocalAnchor {
     }
     fn is_anchored(&self, sth: &SignedTreeHead) -> bool {
         self.roots.contains(&sth.root)
+    }
+}
+
+// ----------------------------------------------------------------------------
+// Real post-quantum STH signing (M1): SLH-DSA / FIPS 205
+// ----------------------------------------------------------------------------
+
+pub mod slh {
+    //! STH signing with SLH-DSA (FIPS 205), parameter set **SLH-DSA-SHA2-128s**
+    //! (small signatures for an infrequently-signed STH). Replaces the M0 placeholder.
+    //!
+    //! The log operator holds [`SlhSigner`] (secret key); the client holds only
+    //! [`SlhVerifier`] (public key). Verification uses no RNG → clean wasm32 build.
+    //! Crate is maintained + NIST-vector-tested but NOT independently audited.
+    use super::{SthSigner, SthVerifier};
+    use fips205::slh_dsa_sha2_128s as pset;
+    use fips205::traits::{SerDes, Signer, Verifier};
+
+    /// SLH-DSA-SHA2-128s signature length in bytes (7856).
+    pub const SIG_LEN: usize = pset::SIG_LEN;
+    /// SLH-DSA-SHA2-128s public-key length in bytes (32).
+    pub const PK_LEN: usize = pset::PK_LEN;
+
+    /// Log-operator signing key.
+    pub struct SlhSigner {
+        sk: pset::PrivateKey,
+        pk_bytes: [u8; PK_LEN],
+    }
+
+    /// Client-side verifying key (public only).
+    pub struct SlhVerifier {
+        pk: pset::PublicKey,
+    }
+
+    impl SlhSigner {
+        /// Generate a fresh keypair (uses the OS RNG via `getrandom`).
+        pub fn generate() -> Result<Self, &'static str> {
+            let (pk, sk) = pset::try_keygen()?;
+            Ok(Self {
+                sk,
+                pk_bytes: pk.into_bytes(),
+            })
+        }
+        /// The matching public verifier the client would receive out of band.
+        pub fn verifier(&self) -> SlhVerifier {
+            SlhVerifier::from_bytes(&self.pk_bytes).expect("own public key is valid")
+        }
+        pub fn public_key_bytes(&self) -> Vec<u8> {
+            self.pk_bytes.to_vec()
+        }
+    }
+
+    impl SthSigner for SlhSigner {
+        fn sign(&self, msg: &[u8]) -> Vec<u8> {
+            // empty context, hedged (randomized) signing per FIPS 205 recommendation.
+            self.sk
+                .try_sign(msg, &[], true)
+                .expect("slh-dsa signing")
+                .to_vec()
+        }
+    }
+
+    impl SlhVerifier {
+        pub fn from_bytes(bytes: &[u8]) -> Result<Self, &'static str> {
+            let arr: [u8; PK_LEN] = bytes.try_into().map_err(|_| "bad public-key length")?;
+            Ok(SlhVerifier {
+                pk: pset::PublicKey::try_from_bytes(&arr)?,
+            })
+        }
+    }
+
+    impl SthVerifier for SlhVerifier {
+        fn verify(&self, msg: &[u8], sig: &[u8]) -> bool {
+            let arr: [u8; SIG_LEN] = match sig.try_into() {
+                Ok(a) => a,
+                Err(_) => return false,
+            };
+            self.pk.verify(msg, &arr, &[])
+        }
     }
 }
 
@@ -351,7 +438,7 @@ pub mod verify {
     pub fn verify_receipt(
         r: &Receipt,
         expected_nonce: &Nonce,
-        signer: &dyn SthSigner,
+        verifier: &dyn SthVerifier,
         anchor: &dyn Anchor,
     ) -> Result<(), VerifyError> {
         // 1. Binding: the quote must commit to OUR nonce, this kem key, this measurement.
@@ -359,9 +446,9 @@ pub mod verify {
         if r.nonce != *expected_nonce || r.quote.report_data != expected {
             return Err(VerifyError::BindingMismatch);
         }
-        // 2. The log operator really signed this (size, root).
+        // 2. The log operator really signed this (size, root) — checked with the public key only.
         let bytes = sth_signing_bytes(r.sth.tree_size, &r.sth.root);
-        if !signer.verify(&bytes, &r.sth.signature) {
+        if !verifier.verify(&bytes, &r.sth.signature) {
             return Err(VerifyError::SthSignatureInvalid);
         }
         // 3. The attested measurement is included in that signed root.
@@ -454,5 +541,45 @@ mod tests {
             verify::verify_receipt(&forged, &nonce, &signer, &anchor),
             Err(verify::VerifyError::InclusionInvalid)
         );
+    }
+
+    #[test]
+    fn slh_dsa_sign_verify_roundtrip() {
+        use super::slh::{SlhSigner, SIG_LEN};
+        let signer = SlhSigner::generate().unwrap();
+        let verifier = signer.verifier();
+        let msg = sth_signing_bytes(7, &sha256(&[b"root"]));
+        let sig = signer.sign(&msg);
+        assert_eq!(sig.len(), SIG_LEN);
+        assert!(verifier.verify(&msg, &sig));
+        assert!(!verifier.verify(&sha256(&[b"other"]), &sig));
+        // a public key recovered from bytes verifies identically (client-side path)
+        let v2 = super::slh::SlhVerifier::from_bytes(&signer.public_key_bytes()).unwrap();
+        assert!(v2.verify(&msg, &sig));
+    }
+
+    #[test]
+    fn full_receipt_with_real_slh_dsa() {
+        use super::slh::SlhSigner;
+        let mut log = TransparencyLog::new();
+        let signer = SlhSigner::generate().unwrap();
+        let verifier = signer.verifier(); // client holds only this
+        let qp = MockQuoteProvider;
+        let mut anchor = LocalAnchor::default();
+
+        let honest = m("honest");
+        let idx = log.append(&honest);
+        anchor.anchor(&log.signed_tree_head(&signer));
+
+        let nonce = Nonce(sha256(&[b"n"]));
+        let kem = KemPublicKey(b"pk".to_vec());
+        let r = Receipt {
+            quote: qp.quote(&nonce, &kem, &honest),
+            nonce: nonce.clone(),
+            kem_pubkey: kem.clone(),
+            inclusion: log.inclusion_proof(idx).unwrap(),
+            sth: log.signed_tree_head(&signer),
+        };
+        assert!(verify::verify_receipt(&r, &nonce, &verifier, &anchor).is_ok());
     }
 }

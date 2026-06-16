@@ -9,6 +9,7 @@
 //! The point: the client refuses a loader that classic attestation alone would accept.
 
 use pqtl_core::log::TransparencyLog;
+use pqtl_core::slh::SlhSigner;
 use pqtl_core::verify::verify_receipt;
 use pqtl_core::*;
 
@@ -41,12 +42,13 @@ fn keyserver_issue(
 }
 
 fn main() {
-    println!("== PQ-Attest-Transparency — M0 (squelette, crypto PLACEHOLDER) ==");
-    println!("   (SHA-256 stand-ins ; ML-KEM/SLH-DSA réels en M1–M2)\n");
+    println!("== PQ-Attest-Transparency — M1 : STH signé SLH-DSA réel ==");
+    println!("   (binding ML-KEM = placeholder jusqu'en M2)\n");
 
-    // Public transparency log + its operator's signer + the anchor (non-equivocation).
+    // Public transparency log + its operator's SLH-DSA signer + the anchor.
     let mut log = TransparencyLog::new();
-    let signer = PlaceholderSigner::new(b"log-operator");
+    let signer = SlhSigner::generate().expect("SLH-DSA keygen");
+    let verifier = signer.verifier(); // what the client holds — public key only
     let qp = MockQuoteProvider;
     let mut anchor = LocalAnchor::default();
 
@@ -60,6 +62,11 @@ fn main() {
         hex8(&sth0.root),
         sth0.tree_size
     );
+    println!(
+        "[bench] STH signé SLH-DSA-SHA2-128s : signature {} o, clé publique {} o (réf. ECDSA ~64–72 o).",
+        sth0.signature.len(),
+        signer.public_key_bytes().len()
+    );
 
     let nonce = Nonce(sha256(&[b"client-session-nonce-1"]));
     let kem = KemPublicKey(b"<client ML-KEM pubkey placeholder>".to_vec());
@@ -69,7 +76,7 @@ fn main() {
     match keyserver_issue(&log, &signer, &qp, &nonce, &kem, &honest) {
         Some(receipt) => {
             print!("[keyserver] mesure présente dans le log → clé libérée, reçu émis.\n            ");
-            match verify_receipt(&receipt, &nonce, &signer, &anchor) {
+            match verify_receipt(&receipt, &nonce, &verifier, &anchor) {
                 Ok(()) => println!("[client] reçu vérifié (binding+inclusion+STH+anchor) → ✅ ACCEPTÉ"),
                 Err(e) => println!("[client] ❌ refus inattendu : {e:?}"),
             }
@@ -97,7 +104,7 @@ fn main() {
         sth: log.signed_tree_head(&signer),
     };
     print!("[keyserver compromis] forge un reçu pour le build fantôme.\n            ");
-    match verify_receipt(&forged, &nonce, &signer, &anchor) {
+    match verify_receipt(&forged, &nonce, &verifier, &anchor) {
         Ok(()) => println!("[client] ⚠️  accepté à tort — BUG"),
         Err(e) => println!("[client] reçu rejeté ({e:?}) → ❌ ATTAQUE DÉTECTÉE"),
     }
@@ -105,6 +112,7 @@ fn main() {
     println!(
         "\nRésumé : le client refuse un loader que l'attestation classique seule aurait accepté.\n\
          Ce que ce squelette prouve : la NON-ÉQUIVOCATION (un build doit être publiquement loggé\n\
-         pour qu'un reçu vérifiable existe). Crypto réelle + co-signature de témoins : M1–M4."
+         pour qu'un reçu vérifiable existe). Reste : preuves de consistance RFC6962 (M1),\n\
+         binding ML-KEM hybride réel (M2), co-signature de témoins (M4)."
     );
 }

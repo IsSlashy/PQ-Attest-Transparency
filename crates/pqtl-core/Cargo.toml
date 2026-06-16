@@ -7,3 +7,6 @@ description = "Core types, trust-boundary traits, transparency log and client re
 
 [dependencies]
 sha2 = { workspace = true }
+# Real post-quantum STH signing (M1). FIPS 205 SLH-DSA; no_std, heap-free verify
+# (clean wasm32 verifier). Maintained + vector-tested, NOT independently audited.
+fips205 = "0.4.0"

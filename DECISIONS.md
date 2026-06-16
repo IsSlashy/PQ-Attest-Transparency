@@ -109,6 +109,6 @@ Reprend RESEARCH §5, **figé** (plus de scope creep sans nouvel ADR) :
 - [x] ADR-006 Valeur = non-équivocation — écrit, reflété README + RESEARCH §6.
 - [x] MVP figé — contrat ci-dessus.
 - [x] **M0 — squelette livré** (build + tests + démo).
-- [ ] M1 — log réel (Merkle incrémental + consistance + STH SLH-DSA).
+- [~] M1 — **STH SLH-DSA (`fips205`, SHA2-128s) fait** (5 tests verts, bench : sig 7856 o / pk 32 o). Reste : Merkle incrémental + **preuves de consistance RFC6962**.
 
-→ Décisions bloquantes écrites, dossiers d'extraction persistés, **M0 vert**. Prochain : **M1**.
+→ Décisions écrites, dossiers persistés, **M0 vert**, **M1 en cours** (SLH-DSA réel branché). Prochain : preuves de consistance.
