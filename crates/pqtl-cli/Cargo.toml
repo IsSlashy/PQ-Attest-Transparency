@@ -1,0 +1,13 @@
+[package]
+name = "pqtl-cli"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+description = "M0 demo driver: shows the ✅ logged-build and ❌ ghost-build paths end to end."
+
+[[bin]]
+name = "pqtl-demo"
+path = "src/main.rs"
+
+[dependencies]
+pqtl-core = { path = "../pqtl-core" }

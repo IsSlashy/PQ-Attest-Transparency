@@ -1,0 +1,17 @@
+# PQ-Attest-Transparency — Cargo workspace
+# M0 = walking skeleton with PLACEHOLDER crypto (SHA-256 stand-ins).
+# Real ML-KEM / SLH-DSA land in M1–M2 (see DECISIONS.md ADR-005).
+[workspace]
+resolver = "2"
+members = [
+    "crates/pqtl-core",
+    "crates/pqtl-cli",
+]
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/Slashy/PQ-Attest-Transparency"
+
+[workspace.dependencies]
+sha2 = "0.10"

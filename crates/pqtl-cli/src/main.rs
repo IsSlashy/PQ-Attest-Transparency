@@ -1,0 +1,110 @@
+//! M0 walking-skeleton demo.
+//!
+//! Drives the two paths the artifact exists to show, end to end, with PLACEHOLDER
+//! crypto (SHA-256 stand-ins; real ML-KEM/SLH-DSA arrive in M1–M2):
+//!   1. a build that is publicly logged + attested  -> key released, client accepts.
+//!   2. a "ghost" build that is NOT logged (a targeted/split-view attack) -> the
+//!      keyserver policy refuses, and even a forged receipt is caught client-side.
+//!
+//! The point: the client refuses a loader that classic attestation alone would accept.
+
+use pqtl_core::log::TransparencyLog;
+use pqtl_core::verify::verify_receipt;
+use pqtl_core::*;
+
+fn measurement_of(label: &str, build: &[u8]) -> Measurement {
+    Measurement(sha256(&[b"loader-build:", label.as_bytes(), build]))
+}
+
+fn hex8(h: &Hash) -> String {
+    h.iter().take(8).map(|b| format!("{b:02x}")).collect()
+}
+
+/// Keyserver release policy: issue a key + a client-verifiable receipt ONLY if the
+/// attested measurement is present in the public log. `None` = release refused.
+fn keyserver_issue(
+    log: &TransparencyLog,
+    signer: &dyn SthSigner,
+    qp: &dyn QuoteProvider,
+    nonce: &Nonce,
+    kem: &KemPublicKey,
+    measurement: &Measurement,
+) -> Option<Receipt> {
+    let idx = log.find(measurement)?; // policy gate: must be publicly logged
+    Some(Receipt {
+        quote: qp.quote(nonce, kem, measurement),
+        nonce: nonce.clone(),
+        kem_pubkey: kem.clone(),
+        inclusion: log.inclusion_proof(idx)?,
+        sth: log.signed_tree_head(signer),
+    })
+}
+
+fn main() {
+    println!("== PQ-Attest-Transparency — M0 (squelette, crypto PLACEHOLDER) ==");
+    println!("   (SHA-256 stand-ins ; ML-KEM/SLH-DSA réels en M1–M2)\n");
+
+    // Public transparency log + its operator's signer + the anchor (non-equivocation).
+    let mut log = TransparencyLog::new();
+    let signer = PlaceholderSigner::new(b"log-operator");
+    let qp = MockQuoteProvider;
+    let mut anchor = LocalAnchor::default();
+
+    // An honest loader build, published to the public log.
+    let honest = measurement_of("v1.0-honest", b"<honest loader bytes>");
+    let idx = log.append(&honest);
+    let sth0 = log.signed_tree_head(&signer);
+    anchor.anchor(&sth0); // witnesses see this root
+    println!(
+        "[log] build honnête publié  idx={idx}  root={}…  taille={}",
+        hex8(&sth0.root),
+        sth0.tree_size
+    );
+
+    let nonce = Nonce(sha256(&[b"client-session-nonce-1"]));
+    let kem = KemPublicKey(b"<client ML-KEM pubkey placeholder>".to_vec());
+
+    // ---------------- Scenario 1: honest, logged build ----------------
+    println!("\n--- Scénario 1 : build loggé + attesté ---");
+    match keyserver_issue(&log, &signer, &qp, &nonce, &kem, &honest) {
+        Some(receipt) => {
+            print!("[keyserver] mesure présente dans le log → clé libérée, reçu émis.\n            ");
+            match verify_receipt(&receipt, &nonce, &signer, &anchor) {
+                Ok(()) => println!("[client] reçu vérifié (binding+inclusion+STH+anchor) → ✅ ACCEPTÉ"),
+                Err(e) => println!("[client] ❌ refus inattendu : {e:?}"),
+            }
+        }
+        None => println!("[keyserver] refus inattendu pour un build honnête (BUG)"),
+    }
+
+    // ---------------- Scenario 2: targeted ghost build ----------------
+    println!("\n--- Scénario 2 : build « fantôme » non loggé (attaque ciblée / split-view) ---");
+    let ghost = measurement_of("v1.0-backdoored", b"<backdoored loader bytes>");
+
+    // 2a. An honest keyserver refuses outright: the measurement isn't in the log.
+    match keyserver_issue(&log, &signer, &qp, &nonce, &kem, &ghost) {
+        Some(_) => println!("[keyserver] (anormal) a émis un reçu pour un build non loggé (BUG)"),
+        None => println!("[keyserver] mesure ABSENTE du log → release refusé (politique) → ❌"),
+    }
+
+    // 2b. A COMPROMISED keyserver forges a receipt anyway, reusing the honest build's
+    //     inclusion proof. The client must still catch it.
+    let forged = Receipt {
+        quote: qp.quote(&nonce, &kem, &ghost),
+        nonce: nonce.clone(),
+        kem_pubkey: kem.clone(),
+        inclusion: log.inclusion_proof(idx).unwrap(), // proof for the HONEST leaf
+        sth: log.signed_tree_head(&signer),
+    };
+    print!("[keyserver compromis] forge un reçu pour le build fantôme.\n            ");
+    match verify_receipt(&forged, &nonce, &signer, &anchor) {
+        Ok(()) => println!("[client] ⚠️  accepté à tort — BUG"),
+        Err(e) => println!("[client] reçu rejeté ({e:?}) → ❌ ATTAQUE DÉTECTÉE"),
+    }
+
+    println!(
+        "\nRésumé : le client refuse un loader que l'attestation classique seule aurait accepté.\n\
+         Ce que ce squelette prouve : la NON-ÉQUIVOCATION (un build doit être publiquement loggé\n\
+         pour qu'un reçu vérifiable existe). Crypto réelle + co-signature de témoins : M1–M4."
+    );
+}
